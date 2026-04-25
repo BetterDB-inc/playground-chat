@@ -5,17 +5,36 @@ import type { GlobalStats } from "@/lib/types";
 import { usePageVisible } from "@/hooks/usePageVisible";
 
 const POLL_INTERVAL_MS = 15_000;
+/** Time without a successful poll before we surface an error state. */
+const ERROR_AFTER_MS = 60_000;
+
+interface State {
+  stats: GlobalStats | null;
+  /** Wall-clock ms timestamp of the last successful fetch, or null if never. */
+  lastSuccessAt: number | null;
+  /** Whether the most recent fetch errored. */
+  hasError: boolean;
+}
 
 export function GlobalStats() {
-  const [stats, setStats] = useState<GlobalStats | null>(null);
+  const [state, setState] = useState<State>({
+    stats: null,
+    lastSuccessAt: null,
+    hasError: false,
+  });
   const visible = usePageVisible();
 
   const fetchStats = useCallback(async () => {
     try {
       const res = await fetch("/api/stats", { cache: "no-store" });
-      if (res.ok) setStats((await res.json()) as GlobalStats);
-    } catch {
-      // Polled; transient errors are fine.
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as GlobalStats;
+      setState({ stats: data, lastSuccessAt: Date.now(), hasError: false });
+    } catch (err) {
+      // Don't blow away the last-known-good stats - keep showing them but
+      // mark the state as errored so the UI can surface a hint.
+      console.warn("/api/stats failed:", err instanceof Error ? err.message : err);
+      setState((prev) => ({ ...prev, hasError: true }));
     }
   }, []);
 
@@ -26,7 +45,8 @@ export function GlobalStats() {
     return () => clearInterval(id);
   }, [visible, fetchStats]);
 
-  if (!stats) {
+  // Initial-load skeleton: only when we have nothing AND no error yet.
+  if (!state.stats && !state.hasError) {
     return (
       <div className="grid grid-cols-3 gap-2.5">
         {["q", "s", "h"].map((k) => (
@@ -36,13 +56,33 @@ export function GlobalStats() {
     );
   }
 
+  // Errored before we ever loaded anything: explicit failure UI.
+  if (!state.stats && state.hasError) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-xs px-3 py-2 text-center">
+        Could not load stats. Retrying every {POLL_INTERVAL_MS / 1000}s.
+      </div>
+    );
+  }
+
+  // We have data. If we've been unable to refresh for a while, dim the cards
+  // and add a stale-data hint without flushing the last known values.
+  const stats = state.stats!;
+  const stale =
+    state.hasError &&
+    state.lastSuccessAt !== null &&
+    Date.now() - state.lastSuccessAt > ERROR_AFTER_MS;
   const hitPct = Math.round(stats.hitRate * 100);
 
   return (
-    <div className="grid grid-cols-3 gap-2.5">
+    <div className={`grid grid-cols-3 gap-2.5 ${stale ? "opacity-60" : ""}`}>
       <StatCard label="Questions answered" value={stats.totalMessages.toLocaleString()} />
       <StatCard label="Saved by caching" value={formatUsd(stats.totalSavedUsd)} accent />
-      <StatCard label="Cache hit rate" value={`${hitPct}%`} accent={hitPct > 50} />
+      <StatCard
+        label={stale ? "Cache hit rate (stale)" : "Cache hit rate"}
+        value={`${hitPct}%`}
+        accent={hitPct > 50}
+      />
     </div>
   );
 }

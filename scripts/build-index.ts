@@ -129,13 +129,23 @@ async function main() {
     const embeddings = await embedBatch(texts, { model: env.embedModel });
     console.log(`[${batchNum}/${totalBatches}] embed done in ${Date.now() - t0}ms`);
 
+    // Defensive: refuse to write a partial batch. A short embeddings array
+    // means OpenAI didn't return one vector per input - usually a transient
+    // upstream issue. Bailing here is safer than silently indexing only some
+    // of the docs and producing a quietly incomplete corpus.
+    if (embeddings.length !== batch.length) {
+      throw new Error(
+        `embed returned ${embeddings.length} vectors for ${batch.length} inputs ` +
+          `(batch ${batchNum}/${totalBatches}); aborting to avoid a partial index. ` +
+          `Re-run pnpm build:index to retry.`,
+      );
+    }
+
     const pipeline = client.pipeline();
     batch.forEach((doc, j) => {
       const vec = embeddings[j];
-      if (!vec) {
-        console.warn(`  no embedding for ${doc.id} - skipping`);
-        return;
-      }
+      // The length check above guarantees `vec` is defined; this narrows TS.
+      if (!vec) return;
       pipeline.hset(
         `doc:${doc.id}`,
         "title",
@@ -153,7 +163,20 @@ async function main() {
       );
     });
     const t1 = Date.now();
-    await pipeline.exec();
+    const pipeResults = await pipeline.exec();
+    // pipeline.exec returns null on connection drop, or an array of
+    // [err, result] tuples. Surface any per-command failure rather than
+    // continuing with partial writes.
+    if (!pipeResults) {
+      throw new Error(`pipeline returned null on batch ${batchNum} (connection lost?)`);
+    }
+    const failed = pipeResults.filter(([err]) => err !== null);
+    if (failed.length > 0) {
+      throw new Error(
+        `${failed.length}/${pipeResults.length} HSETs failed in batch ${batchNum}: ` +
+          (failed[0]?.[0]?.message ?? "unknown error"),
+      );
+    }
     stored += batch.length;
     console.log(
       `[${batchNum}/${totalBatches}] pipeline done in ${Date.now() - t1}ms · stored ${stored}/${docs.length}`,

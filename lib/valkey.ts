@@ -52,3 +52,34 @@ export function createValkeyClient(): Valkey {
  * Reuses across hot-reloads in dev and across warm function invocations on Vercel.
  */
 export const valkey: Valkey = global._valkey ?? (global._valkey = createValkeyClient());
+
+/**
+ * Best-effort graceful shutdown. Vercel functions don't run long enough to
+ * benefit from this (the platform reaps them on its own schedule), but
+ * self-hosted Node servers receive SIGTERM on `docker stop` / systemd
+ * `stop` / Kubernetes pod termination, and this avoids leaving sockets in
+ * TIME_WAIT plus flushes any in-flight pipelined commands.
+ *
+ * The handler is registered once per process (idempotent). It is a no-op on
+ * Vercel where `process.on` listeners are limited.
+ */
+let _shutdownRegistered = false;
+function registerShutdown() {
+  if (_shutdownRegistered) return;
+  _shutdownRegistered = true;
+  const close = async () => {
+    try {
+      await valkey.quit();
+    } catch {
+      // Already closed or never connected; nothing useful to do.
+    }
+  };
+  process.once("SIGTERM", close);
+  process.once("SIGINT", close);
+  process.once("beforeExit", close);
+}
+// Vercel sets VERCEL=1 at build + runtime; on that platform we skip the
+// listeners (they'd accumulate across function invocations).
+if (!process.env.VERCEL) {
+  registerShutdown();
+}

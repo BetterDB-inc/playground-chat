@@ -45,7 +45,9 @@ data/               Curated FAQ (faq.jsonl). Crawled docs are gitignored.
 - `pnpm typecheck` passes
 - `pnpm lint` passes
 - `pnpm test` passes (if you added tests; please do for non-trivial logic)
-- New env vars are documented in `.env.example` AND in `lib/env.ts`
+- New env vars are documented in `.env.example` AND, if required at boot,
+  added to `validateEnv()` in `lib/env.ts` so misconfiguration fails fast
+  instead of producing an opaque 500 on the first request
 - New tools added to `lib/tools.ts` follow the `cached(name, args, fn, { costEstimateUsd })` pattern so cache-savings reporting stays accurate.
 
 ## Code style

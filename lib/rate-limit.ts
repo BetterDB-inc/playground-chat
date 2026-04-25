@@ -20,12 +20,23 @@ function nowSec(): number {
 }
 
 /**
- * Atomic sliding-window check + insert. Trims both the hour and day windows,
- * counts each, and only inserts the new entry if both limits would still be
- * respected after the insert. KEYS:[hourKey, dayKey] ARGV:[now, hourLimit,
- * dayLimit, member].
+ * Atomic sliding-window check + insert.
  *
- * Returns: { ok, hourCount, dayCount, retryAfter? }
+ * Steps inside the script (single Valkey call, no other client can interleave):
+ *   1. ZREMRANGEBYSCORE evicts entries older than the window edge from each
+ *      sorted set (hour, day).
+ *   2. ZCARD counts what's left in each window. This is the count BEFORE
+ *      we'd add the current request.
+ *   3. If `count >= max` for either window, we reject. We compare against
+ *      the CURRENT count (i.e. limits apply pre-insert): hourLimit=20 means
+ *      "at most 20 entries in the trailing hour", so the 20th insert is the
+ *      last one that succeeds and the 21st request is rejected.
+ *   4. Otherwise ZADD inserts the new member with the current epoch as score
+ *      and refreshes the per-key EXPIRE so empty windows GC themselves.
+ *
+ * KEYS:[hourKey, dayKey]
+ * ARGV:[now, hourLimit, dayLimit, member]
+ * Returns: [ok (1|0), hourCountAfter, dayCountAfter, retryAfterSec]
  */
 const SLIDING_WINDOW_SCRIPT = `
 local hourKey = KEYS[1]
