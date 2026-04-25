@@ -1,9 +1,17 @@
 import { valkey } from "./valkey";
+import { agentCache, semanticCache } from "./cache";
 import type { GlobalStats } from "./types";
+
+/**
+ * Global counters maintained by /api/chat. Per-turn we increment a few of
+ * these directly; we also pull authoritative `costSavedMicros` from the
+ * agent-cache and semantic-cache packages so the displayed savings reflect
+ * what those packages actually computed (model + token-aware), not a local
+ * approximation.
+ */
 
 const K = {
   msgs: "playground:stats:total_messages",
-  saved: "playground:stats:total_saved_usd_micros",
   hits: "playground:stats:total_hits",
   misses: "playground:stats:total_misses",
 };
@@ -13,30 +21,37 @@ export async function recordTurn(opts: {
   savedUsd: number;
   costUsd?: number;
 }): Promise<void> {
-  const micros = Math.round(opts.savedUsd * 1_000_000);
+  // savedUsd / costUsd no longer flow into Valkey from here - the cache
+  // packages own those counters. We only track turn count + hit/miss split.
+  void opts.savedUsd;
+  void opts.costUsd;
   const p = valkey.pipeline();
   p.incr(K.msgs);
-  if (micros > 0) p.incrby(K.saved, micros);
   if (opts.semanticHit) p.incr(K.hits);
   else p.incr(K.misses);
   await p.exec();
 }
 
 export async function readStats(): Promise<GlobalStats> {
-  const [msgs, savedMicros, hits, misses] = await Promise.all([
+  const [msgsRaw, hitsRaw, missesRaw, agentStats, semStats] = await Promise.all([
     valkey.get(K.msgs),
-    valkey.get(K.saved),
     valkey.get(K.hits),
     valkey.get(K.misses),
+    agentCache.stats().catch(() => null),
+    semanticCache.stats().catch(() => null),
   ]);
 
-  const totalHits = Number(hits ?? 0);
-  const totalMisses = Number(misses ?? 0);
+  const totalHits = Number(hitsRaw ?? 0);
+  const totalMisses = Number(missesRaw ?? 0);
   const total = totalHits + totalMisses;
 
+  const agentSavedMicros = agentStats?.costSavedMicros ?? 0;
+  const semSavedMicros = semStats?.costSavedMicros ?? 0;
+  const totalSavedUsd = (agentSavedMicros + semSavedMicros) / 1_000_000;
+
   return {
-    totalMessages: Number(msgs ?? 0),
-    totalSavedUsd: Number(savedMicros ?? 0) / 1_000_000,
+    totalMessages: Number(msgsRaw ?? 0),
+    totalSavedUsd,
     totalHits,
     totalMisses,
     hitRate: total > 0 ? totalHits / total : 0,

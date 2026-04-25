@@ -1,8 +1,15 @@
 import { valkey } from "./valkey";
+import { embedToBuffer } from "./embeddings";
+import { cmd, escapeSearchValue, escapeTagValue } from "./valkey-cmd";
 
-const EMBED_DIM = Number(process.env.EMBED_DIM ?? 1536);
+/**
+ * RAG layer over the `docs_idx` index produced by scripts/build-index.ts.
+ * All queries go through `cmd()` so RediSearch reserved characters in user
+ * input get escaped consistently (otherwise an LLM-supplied value containing
+ * `:` or `(` produces a malformed query).
+ */
 
-interface DocResult {
+export interface DocResult {
   id: string;
   title: string;
   content: string;
@@ -12,98 +19,103 @@ interface DocResult {
   score: number;
 }
 
-async function embed(text: string): Promise<Buffer> {
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: process.env.EMBED_MODEL ?? "text-embedding-3-small",
-      input: text,
-    }),
-  });
-  if (!res.ok) throw new Error(`Embed failed: ${res.status}`);
-  const json = (await res.json()) as { data: [{ embedding: number[] }] };
-  const arr = json.data[0].embedding;
-  const buf = Buffer.alloc(arr.length * 4);
-  arr.forEach((v, i) => buf.writeFloatLE(v, i * 4));
-  return buf;
-}
+export type DocSource = "valkey" | "redis";
 
 export async function vectorSearch(
   query: string,
-  source?: string,
-  limit = 5
+  source?: DocSource,
+  limit = 5,
 ): Promise<DocResult[]> {
-  const qVec = await embed(query);
+  const qVec = await embedToBuffer(query);
+  const filter = source ? `@source:{${escapeTagValue(source)}}` : "*";
 
-  // Build FT.SEARCH query
-  let filter = "*";
-  if (source && (source === "valkey" || source === "redis")) {
-    filter = `@source:{${source}}`;
-  }
-
-  const args = [
+  const raw = await cmd<unknown[]>(
+    valkey,
+    "FT.SEARCH",
     "docs_idx",
-    `(${filter})=>[KNN ${limit} @embedding $vec AS __score]`,
-    "PARAMS", "2", "vec", qVec,
-    "SORTBY", "__score",
-    "RETURN", "6", "title", "content", "source", "kind", "url", "__score",
-    "DIALECT", "2",
-  ];
-
-  type ValkeyWithCall = typeof valkey & {
-    call: (...a: unknown[]) => Promise<unknown>;
-  };
-  const raw = await (valkey as ValkeyWithCall).call("FT.SEARCH", ...args) as unknown[];
+    `(${filter})=>[KNN ${limit} @embedding $vec]`,
+    "PARAMS",
+    "2",
+    "vec",
+    qVec,
+    "RETURN",
+    "6",
+    "title",
+    "content",
+    "source",
+    "kind",
+    "url",
+    "__embedding_score",
+    "DIALECT",
+    "2",
+  );
   return parseSearchResults(raw);
 }
 
 export async function getCommandByName(
   name: string,
-  source?: string
+  source?: DocSource,
 ): Promise<DocResult | null> {
-  const normalized = name.toUpperCase().replace(/\s+/g, "-");
-  const srcFilter = source ? `@source:{${source}} ` : "";
+  // RediSearch tokenises on whitespace and punctuation. Command names like
+  // "FT.SEARCH" must be queried as escaped literals or the dot is treated as
+  // a separator and we get false matches.
+  const normalized = escapeSearchValue(name.toUpperCase().replace(/\s+/g, "-"));
+  const srcFilter = source ? `@source:{${escapeTagValue(source)}} ` : "";
   const query = `${srcFilter}@title:${normalized}`;
 
-  type ValkeyWithCall = typeof valkey & {
-    call: (...a: unknown[]) => Promise<unknown>;
-  };
-  const raw = await (valkey as ValkeyWithCall).call(
-    "FT.SEARCH", "docs_idx", query,
-    "LIMIT", "0", "1",
-    "RETURN", "5", "title", "content", "source", "url", "kind"
-  ) as unknown[];
-
+  const raw = await cmd<unknown[]>(
+    valkey,
+    "FT.SEARCH",
+    "docs_idx",
+    query,
+    "LIMIT",
+    "0",
+    "1",
+    "RETURN",
+    "5",
+    "title",
+    "content",
+    "source",
+    "url",
+    "kind",
+  );
   const results = parseSearchResults(raw);
   return results[0] ?? null;
 }
 
+const MODULE_QUERY_TERMS: Record<string, string> = {
+  "valkey-search": "valkey-search vector search index",
+  "valkey-bloom": "bloom filter probabilistic data structure",
+  "valkey-json": "json document storage",
+  "valkey-ldap": "ldap authentication",
+};
+
 export async function getModuleInfo(module: string): Promise<DocResult | null> {
-  const moduleMap: Record<string, string> = {
-    "valkey-search": "valkey-search",
-    "valkey-bloom": "bloom filter",
-    "valkey-json": "json module",
-    "valkey-ldap": "ldap",
-  };
-  const term = moduleMap[module.toLowerCase()] ?? module;
-  return vectorSearch(term, "valkey", 1).then((r) => r[0] ?? null);
+  const term = MODULE_QUERY_TERMS[module.toLowerCase()] ?? module;
+  const r = await vectorSearch(term, "valkey", 1);
+  return r[0] ?? null;
 }
 
+/**
+ * FT.SEARCH reply is `[total, key1, [field, value, ...], key2, [...], ...]`.
+ * We defensively check the count before treating subsequent entries as keys.
+ */
 function parseSearchResults(raw: unknown[]): DocResult[] {
-  if (!Array.isArray(raw) || raw.length < 1) return [];
-  // Format: [count, key1, [field, value, ...], key2, ...]
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const total = typeof raw[0] === "number" ? raw[0] : Number(raw[0]);
+  if (!total || total <= 0) return [];
+
   const results: DocResult[] = [];
   for (let i = 1; i < raw.length; i += 2) {
-    const key = raw[i] as string;
-    const fields = raw[i + 1] as string[];
+    const key = typeof raw[i] === "string" ? (raw[i] as string) : String(raw[i] ?? "");
+    const fields = raw[i + 1];
     if (!Array.isArray(fields)) continue;
+
     const map: Record<string, string> = {};
     for (let j = 0; j < fields.length; j += 2) {
-      map[fields[j]] = fields[j + 1] ?? "";
+      const k = String(fields[j] ?? "");
+      const v = String(fields[j + 1] ?? "");
+      if (k) map[k] = v;
     }
     const id = key.replace(/^doc:/, "");
     results.push({
@@ -113,7 +125,7 @@ function parseSearchResults(raw: unknown[]): DocResult[] {
       source: map["source"] ?? "",
       kind: map["kind"] ?? "",
       url: map["url"] ?? "",
-      score: parseFloat(map["__score"] ?? "1"),
+      score: parseFloat(map["__embedding_score"] ?? "1"),
     });
   }
   return results;
