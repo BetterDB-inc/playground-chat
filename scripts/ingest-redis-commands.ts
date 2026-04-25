@@ -1,11 +1,13 @@
 #!/usr/bin/env tsx
 /**
  * Fetches Redis OSS command docs and writes JSONL to data/redis-docs.jsonl.
+ *
+ * Politeness: see _scrape-utils.ts and the SCRAPE_DELAY_MS env var.
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import * as crypto from "crypto";
+import { chunkText, decodeEntities, makeId, politeFetchHtml, stripHtml } from "./_scrape-utils";
 
 interface Doc {
   id: string;
@@ -18,65 +20,19 @@ interface Doc {
 
 const COMMANDS_URL = "https://redis.io/docs/latest/commands/";
 const OUT_FILE = path.join(process.cwd(), "data", "redis-docs.jsonl");
-const MAX_TOKENS = 800;
-
-function chunkText(text: string, maxTokens = MAX_TOKENS): string[] {
-  const words = text.split(/\s+/);
-  const chunks: string[] = [];
-  let current: string[] = [];
-  let count = 0;
-  for (const w of words) {
-    const t = Math.ceil(w.length / 4);
-    if (count + t > maxTokens && current.length > 0) {
-      chunks.push(current.join(" "));
-      current = [];
-      count = 0;
-    }
-    current.push(w);
-    count += t;
-  }
-  if (current.length) chunks.push(current.join(" "));
-  return chunks;
-}
-
-function makeId(title: string, idx?: number): string {
-  const base = `redis:${title}${idx !== undefined ? `:${idx}` : ""}`;
-  return crypto.createHash("md5").update(base).digest("hex").slice(0, 12);
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-}
-
-async function fetchHtml(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: { "User-Agent": "BetterDB-playground-ingest/1.0" },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
-  return res.text();
-}
+const MAX_COMMANDS = Number(process.env.MAX_COMMANDS ?? 200);
 
 function extractCommandLinks(html: string, base: string): string[] {
   const re = /href="([^"]+)"/g;
   const links: string[] = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
-    const href = m[1];
+    const raw = m[1];
+    if (!raw) continue;
+    const href = decodeEntities(raw);
     if (!href) continue;
     try {
       const abs = new URL(href, base).href;
-      // Only OSS command pages (exclude cloud, enterprise, etc.)
       if (
         abs.startsWith("https://redis.io/docs/latest/commands/") &&
         abs !== base &&
@@ -86,7 +42,7 @@ function extractCommandLinks(html: string, base: string): string[] {
         links.push(abs);
       }
     } catch {
-      // skip
+      // skip invalid
     }
   }
   return [...new Set(links)];
@@ -94,23 +50,23 @@ function extractCommandLinks(html: string, base: string): string[] {
 
 async function main() {
   console.log("Fetching Redis commands index…");
-  const html = await fetchHtml(COMMANDS_URL);
-  const links = extractCommandLinks(html, COMMANDS_URL).slice(0, 200);
+  const html = await politeFetchHtml(COMMANDS_URL);
+  const links = extractCommandLinks(html, COMMANDS_URL).slice(0, MAX_COMMANDS);
   console.log(`Found ${links.length} command pages.`);
 
   const docs: Doc[] = [];
   for (const url of links) {
     try {
-      const page = await fetchHtml(url);
+      const page = await politeFetchHtml(url);
       const titleMatch = /<h1[^>]*>([^<]+)<\/h1>/i.exec(page);
-      const title = titleMatch ? titleMatch[1].trim() : url.split("/").at(-2) ?? "unknown";
+      const title = titleMatch?.[1] ? titleMatch[1].trim() : (url.split("/").at(-2) ?? "unknown");
       const mainMatch = /<main[^>]*>([\s\S]*?)<\/main>/i.exec(page);
-      const body = mainMatch ? stripHtml(mainMatch[1]) : stripHtml(page);
+      const body = mainMatch?.[1] ? stripHtml(mainMatch[1]) : stripHtml(page);
       if (body.length < 20) continue;
       const chunks = chunkText(body);
       chunks.forEach((content, i) => {
         docs.push({
-          id: makeId(title, chunks.length > 1 ? i : undefined),
+          id: makeId(["redis", title, String(chunks.length > 1 ? i : "")]),
           source: "redis",
           kind: "command",
           title: chunks.length > 1 ? `${title} (${i + 1})` : title,
@@ -119,7 +75,7 @@ async function main() {
         });
       });
     } catch (e) {
-      console.warn(`  skip ${url}: ${e}`);
+      console.warn(`  skip ${url}:`, e instanceof Error ? e.message : e);
     }
   }
 

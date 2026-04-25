@@ -1,12 +1,21 @@
 #!/usr/bin/env tsx
 /**
  * Reads JSONL doc files, embeds them, and upserts into valkey-search.
- * Creates FT index docs_idx if it doesn't exist.
+ * Creates the FT index `docs_idx` after data is written.
+ *
+ * Performance note: we drop the index BEFORE inserting and recreate it
+ * AFTER the bulk write completes. valkey-search would otherwise re-index
+ * each HSET synchronously (very slow for 3k+ docs); the post-bulk
+ * `FT.CREATE` triggers one efficient backfill pass instead.
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import Valkey from "iovalkey";
+import type Valkey from "iovalkey";
+import { createValkeyClient } from "../lib/valkey";
+import { embedBatch, floatArrayToBuffer } from "../lib/embeddings";
+import { validateEnv } from "../lib/env";
+import { cmd } from "../lib/valkey-cmd";
 
 interface Doc {
   id: string;
@@ -17,63 +26,75 @@ interface Doc {
   content: string;
 }
 
-const VALKEY_URL = process.env.VALKEY_URL ?? "redis://localhost:6399";
-const EMBED_MODEL = process.env.EMBED_MODEL ?? "text-embedding-3-small";
-const EMBED_DIM = Number(process.env.EMBED_DIM ?? 1536);
-const BATCH_SIZE = 100;
+const BATCH_SIZE = Number(process.env.BUILD_INDEX_BATCH ?? 16);
 const INDEX_NAME = "docs_idx";
 
-async function embed(texts: string[]): Promise<number[][]> {
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
-  });
-  if (!res.ok) throw new Error(`Embed error: ${res.status} ${await res.text()}`);
-  const json = (await res.json()) as { data: { embedding: number[]; index: number }[] };
-  return json.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
-}
-
-function floatArrayToBuffer(arr: number[]): Buffer {
-  const buf = Buffer.alloc(arr.length * 4);
-  arr.forEach((v, i) => buf.writeFloatLE(v, i * 4));
-  return buf;
-}
-
-async function ensureIndex(client: Valkey): Promise<void> {
+async function dropIndexIfExists(client: Valkey): Promise<void> {
   try {
-    await (client as unknown as { call: (...args: unknown[]) => Promise<unknown> }).call("FT.INFO", INDEX_NAME);
-    console.log("Index already exists.");
+    await cmd(client, "FT.DROPINDEX", INDEX_NAME);
+    console.log("Dropped existing index.");
   } catch {
-    console.log("Creating index docs_idx…");
-    await (client as unknown as { call: (...args: unknown[]) => Promise<unknown> }).call(
-      "FT.CREATE",
-      INDEX_NAME,
-      "ON", "HASH",
-      "PREFIX", "1", "doc:",
-      "SCHEMA",
-      "title", "TEXT", "WEIGHT", "2.0",
-      "content", "TEXT",
-      "source", "TAG",
-      "kind", "TAG",
-      "url", "TAG",
-      "embedding", "VECTOR", "HNSW", "6",
-      "TYPE", "FLOAT32",
-      "DIM", String(EMBED_DIM),
-      "DISTANCE_METRIC", "COSINE"
-    );
-    console.log("Index created.");
+    // index didn't exist; fine
+  }
+}
+
+async function createIndex(client: Valkey, dim: number): Promise<void> {
+  console.log(`Creating index ${INDEX_NAME} (DIM=${dim})…`);
+  await cmd(
+    client,
+    "FT.CREATE",
+    INDEX_NAME,
+    "ON",
+    "HASH",
+    "PREFIX",
+    "1",
+    "doc:",
+    "SCHEMA",
+    "title",
+    "TEXT",
+    "content",
+    "TEXT",
+    "source",
+    "TAG",
+    "kind",
+    "TAG",
+    "url",
+    "TAG",
+    "embedding",
+    "VECTOR",
+    "HNSW",
+    "6",
+    "TYPE",
+    "FLOAT32",
+    "DIM",
+    String(dim),
+    "DISTANCE_METRIC",
+    "COSINE",
+  );
+  console.log("Index created. Backfill will run in background.");
+}
+
+async function waitForBackfill(client: Valkey): Promise<void> {
+  // FT.INFO returns alternating field/value entries. Poll until backfill
+  // completes - the script's exit code then reflects an index that's ready
+  // to serve queries.
+  const POLL_INTERVAL_MS = 1_000;
+  while (true) {
+    const info = await cmd<unknown[]>(client, "FT.INFO", INDEX_NAME);
+    const flat: Record<string, string> = {};
+    for (let i = 0; i < info.length - 1; i += 2) {
+      flat[String(info[i])] = String(info[i + 1]);
+    }
+    const pct = Number(flat["backfill_complete_percent"] ?? 0);
+    const numDocs = Number(flat["num_docs"] ?? 0);
+    console.log(`backfill ${(pct * 100).toFixed(1)}% - num_docs=${numDocs}`);
+    if (pct >= 1) break;
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 }
 
 async function main() {
-  if (!process.env.OPENAI_API_KEY) {
-    console.error("OPENAI_API_KEY is required");
-    process.exit(1);
-  }
+  const env = validateEnv();
 
   const files = [
     path.join(process.cwd(), "data", "valkey-docs.jsonl"),
@@ -92,33 +113,55 @@ async function main() {
   }
   console.log(`Loaded ${docs.length} docs.`);
 
-  const client = new Valkey(VALKEY_URL);
-  await ensureIndex(client);
+  const client = createValkeyClient();
+  await dropIndexIfExists(client);
 
   let stored = 0;
   for (let i = 0; i < docs.length; i += BATCH_SIZE) {
     const batch = docs.slice(i, i + BATCH_SIZE);
     const texts = batch.map((d) => `${d.title}\n\n${d.content}`);
-    console.log(`Embedding batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(docs.length / BATCH_SIZE)}…`);
-    const embeddings = await embed(texts);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(docs.length / BATCH_SIZE);
+    console.log(
+      `[${batchNum}/${totalBatches}] embed ${texts.length} inputs (~${texts.reduce((s, t) => s + t.length, 0)} chars)`,
+    );
+    const t0 = Date.now();
+    const embeddings = await embedBatch(texts, { model: env.embedModel });
+    console.log(`[${batchNum}/${totalBatches}] embed done in ${Date.now() - t0}ms`);
 
     const pipeline = client.pipeline();
     batch.forEach((doc, j) => {
-      const key = `doc:${doc.id}`;
-      const embBuf = floatArrayToBuffer(embeddings[j]);
-      pipeline.hset(key, {
-        title: doc.title,
-        content: doc.content,
-        source: doc.source,
-        kind: doc.kind,
-        url: doc.url,
-        embedding: embBuf,
-      });
+      const vec = embeddings[j];
+      if (!vec) {
+        console.warn(`  no embedding for ${doc.id} - skipping`);
+        return;
+      }
+      pipeline.hset(
+        `doc:${doc.id}`,
+        "title",
+        doc.title,
+        "content",
+        doc.content,
+        "source",
+        doc.source,
+        "kind",
+        doc.kind,
+        "url",
+        doc.url,
+        "embedding",
+        floatArrayToBuffer(vec),
+      );
     });
+    const t1 = Date.now();
     await pipeline.exec();
     stored += batch.length;
-    console.log(`  stored ${stored}/${docs.length}`);
+    console.log(
+      `[${batchNum}/${totalBatches}] pipeline done in ${Date.now() - t1}ms · stored ${stored}/${docs.length}`,
+    );
   }
+
+  await createIndex(client, env.embedDim);
+  await waitForBackfill(client);
 
   await client.quit();
   console.log("Done.");

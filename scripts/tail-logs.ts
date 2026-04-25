@@ -4,25 +4,26 @@
  * Usage: pnpm tail:logs
  */
 
-import Valkey from "iovalkey";
+import { createValkeyClient } from "../lib/valkey";
 
-const VALKEY_URL = process.env.VALKEY_URL ?? "redis://localhost:6399";
 const STREAM_KEY = process.env.LOG_STREAM_KEY ?? "playground:logs";
 
 type XrangeEntry = [string, string[]];
 
 async function main() {
-  const client = new Valkey(VALKEY_URL);
+  const client = createValkeyClient();
 
-  const entries = await (client as unknown as {
-    xrevrange: (
-      key: string,
-      end: string,
-      start: string,
-      count: string,
-      countVal: string
-    ) => Promise<XrangeEntry[]>;
-  }).xrevrange(STREAM_KEY, "+", "-", "COUNT", "100");
+  const entries = await (
+    client as unknown as {
+      xrevrange: (
+        key: string,
+        end: string,
+        start: string,
+        count: string,
+        countVal: string,
+      ) => Promise<XrangeEntry[]>;
+    }
+  ).xrevrange(STREAM_KEY, "+", "-", "COUNT", "100");
 
   if (!entries || entries.length === 0) {
     console.log("No log entries found.");
@@ -35,11 +36,14 @@ async function main() {
   for (const [id, fields] of entries) {
     const map: Record<string, string> = {};
     for (let i = 0; i < fields.length; i += 2) {
-      map[fields[i]] = fields[i + 1] ?? "";
+      const k = fields[i];
+      if (!k) continue;
+      map[k] = fields[i + 1] ?? "";
     }
 
     const ts = map["ts"] ?? id;
-    const ip = map["ip"] ?? "?";
+    // Logger now stores hashed IPs; fall back to legacy "ip" field for old entries.
+    const ip = map["ip_hash"] ?? map["ip"] ?? "?";
     const q = (map["q"] ?? "").slice(0, 80);
     const semHit = map["semantic_hit"] === "true" ? "HIT" : "MISS";
     const toolHits = map["tool_hits"] ?? "";
