@@ -5,26 +5,27 @@ import { TurnMetrics } from "./TurnMetrics";
 import type { TurnMetrics as TurnMetricsType } from "@/lib/types";
 
 interface Props {
-  turns: TurnMetricsType[];
+  turns: { id: string; metrics: TurnMetricsType }[];
 }
 
 export function MetricsPanel({ turns }: Props) {
   return (
-    <aside className="flex flex-col h-full bg-[#0f1923] border-l border-[#1A3F54]/60 overflow-hidden">
+    <aside className="flex flex-col h-full bg-background border-l border-border overflow-hidden">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-[#1A3F54]/60 flex items-center gap-2">
-        <div className="w-2 h-2 rounded-full bg-[#2DD4BF] animate-pulse" />
-        <h2 className="text-sm font-semibold text-slate-200">Cache Metrics</h2>
+      <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+        </span>
+        <h2 className="text-sm font-semibold text-foreground tracking-tight">Cache Metrics</h2>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        {/* Global stats */}
         <section>
           <SectionLabel>All-time</SectionLabel>
           <GlobalStats />
         </section>
 
-        {/* Per-turn */}
         <section>
           <SectionLabel>This session</SectionLabel>
           <TurnMetrics turns={turns} />
@@ -32,11 +33,10 @@ export function MetricsPanel({ turns }: Props) {
       </div>
 
       {/* Footer */}
-      <div className="px-4 py-2 border-t border-[#1A3F54]/60">
-        <p className="text-[10px] text-slate-600 text-center">
-          Powered by{" "}
-          <span className="text-[#2DD4BF]">@betterdb/agent-cache</span> &amp;{" "}
-          <span className="text-[#2DD4BF]">@betterdb/semantic-cache</span>
+      <div className="px-4 py-2.5 border-t border-border">
+        <p className="text-[10px] text-muted-foreground/70 text-center">
+          Powered by <span className="text-primary font-medium">@betterdb/agent-cache</span> &amp;{" "}
+          <span className="text-primary font-medium">@betterdb/semantic-cache</span>
         </p>
       </div>
     </aside>
@@ -45,7 +45,7 @@ export function MetricsPanel({ turns }: Props) {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[10px] uppercase tracking-widest text-slate-500 mb-2">
+    <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2.5 font-medium">
       {children}
     </div>
   );

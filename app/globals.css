@@ -2,31 +2,275 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/*
+ * Fonts are loaded via next/font in app/layout.tsx (self-hosted, zero external
+ * requests, no FOIT). Token aliases below let the rest of the stylesheet
+ * reference them without knowing the family name.
+ */
 
+/*
+ * Theme tokens - mirrors valkey/monitor (Zinc base + Teal accent, OKLch).
+ * :root holds the LIGHT theme; .dark overrides to the DARK theme.
+ */
 :root {
-  --bg: #0f1923;
-  --brand-dark: #1A3F54;
-  --brand-teal: #2DD4BF;
+  /* Surfaces */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.141 0.005 285.823);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+
+  /* Brand */
+  --primary: oklch(0.511 0.096 186.391);
+  --primary-foreground: oklch(0.984 0.014 180.72);
+
+  /* Neutrals */
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.967 0.001 286.375);
+  --accent-foreground: oklch(0.21 0.006 285.885);
+
+  /* Semantic */
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.714 0.188 143.292);
+  --success-foreground: oklch(0.198 0.038 143.973);
+  --warning: oklch(0.769 0.188 70.08);
+  --info: oklch(0.623 0.214 259.815);
+
+  /* Lines */
+  --border: oklch(0.92 0.004 286.32);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.705 0.015 286.067);
+
+  /* Code-block tint (light) */
+  --code-bg: oklch(0.967 0.001 286.375);
+  --code-fg: oklch(0.4 0.06 186);
+  --inline-code-bg: oklch(0.94 0.005 286.32);
+
+  /* Radii */
+  --radius: 0.625rem;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+
+  /* Fonts */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.dark {
+  --background: oklch(0.141 0.005 285.823);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.21 0.006 285.885);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.21 0.006 285.885);
+  --popover-foreground: oklch(0.985 0 0);
+
+  --primary: oklch(0.704 0.14 182.503);
+  --primary-foreground: oklch(0.141 0.005 285.823);
+
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.274 0.006 286.033);
+  --muted-foreground: oklch(0.705 0.015 286.067);
+  --accent: oklch(0.274 0.006 286.033);
+  --accent-foreground: oklch(0.985 0 0);
+
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.714 0.188 143.292);
+  --success-foreground: oklch(0.198 0.038 143.973);
+
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.552 0.016 285.938);
+
+  --code-bg: var(--background);
+  --code-fg: oklch(0.875 0.06 182);
+  --inline-code-bg: oklch(1 0 0 / 7%);
+}
+
+html,
 body {
-  background-color: var(--bg);
-  color: #e2e8f0;
-  font-family: Inter, sans-serif;
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Scrollbar styling */
+/* Scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #0f1923;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1A3F54;
-  border-radius: 3px;
+  background: var(--border);
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #2DD4BF;
+  background: var(--muted-foreground);
+}
+
+/* Selection */
+::selection {
+  background: oklch(0.704 0.14 182.503 / 35%);
+  color: var(--foreground);
+}
+
+/*
+ * Markdown prose styling for assistant messages.
+ * Scoped to .prose-chat - works in both themes via tokens above.
+ */
+.prose-chat {
+  color: var(--card-foreground);
+  font-size: 0.875rem;
+  line-height: 1.65;
+}
+.prose-chat > * + * {
+  margin-top: 0.75rem;
+}
+.prose-chat p {
+  margin: 0;
+}
+.prose-chat strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+.prose-chat em {
+  font-style: italic;
+}
+
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3,
+.prose-chat h4 {
+  color: var(--foreground);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+.prose-chat h1 {
+  font-size: 1.25rem;
+}
+.prose-chat h2 {
+  font-size: 1.125rem;
+}
+.prose-chat h3 {
+  font-size: 1rem;
+}
+.prose-chat h4 {
+  font-size: 0.9375rem;
+}
+
+.prose-chat a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: oklch(from var(--primary) l c h / 40%);
+  text-underline-offset: 2px;
+  transition: text-decoration-color 120ms ease;
+}
+.prose-chat a:hover {
+  text-decoration-color: var(--primary);
+}
+
+.prose-chat ul,
+.prose-chat ol {
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.prose-chat ul {
+  list-style: disc;
+}
+.prose-chat ol {
+  list-style: decimal;
+}
+.prose-chat li::marker {
+  color: var(--muted-foreground);
+}
+.prose-chat li > p {
+  display: inline;
+}
+
+.prose-chat blockquote {
+  border-left: 2px solid var(--primary);
+  padding-left: 0.875rem;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.prose-chat hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.25rem 0;
+}
+
+/* Inline code */
+.prose-chat code:not(pre code) {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: var(--radius-sm);
+  background: var(--inline-code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--border);
+}
+
+/* Code blocks */
+.prose-chat pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--card-foreground);
+}
+.prose-chat pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* Tables */
+.prose-chat table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.prose-chat th,
+.prose-chat td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.prose-chat th {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.6875rem;
+}
+.prose-chat tr:last-child td {
+  border-bottom: none;
 }

@@ -3,56 +3,63 @@
 import type { TurnMetrics } from "@/lib/types";
 
 interface Props {
-  turns: TurnMetrics[];
+  /**
+   * Per-turn metrics with stable identifiers. The parent assigns ids as they
+   * are received so list reordering doesn't cause React to mis-key children.
+   */
+  turns: { id: string; metrics: TurnMetrics }[];
 }
 
 export function TurnMetrics({ turns }: Props) {
   if (turns.length === 0) {
     return (
-      <div className="text-slate-500 text-sm text-center py-6">
+      <div className="text-muted-foreground text-xs text-center py-8 px-3 border border-dashed border-border rounded-lg">
         Ask a question to see per-turn cache metrics.
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {[...turns].reverse().map((turn, i) => (
-        <TurnCard key={i} turn={turn} idx={turns.length - i} />
+        <TurnCard key={turn.id} turn={turn.metrics} idx={turns.length - i} />
       ))}
     </div>
   );
 }
 
 function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
-  const totalSaved = (turn.savedUsd ?? 0).toFixed(4);
+  // Only show "saved this turn" when there actually is a saving - a miss
+  // displaying "$0.0000 saved" is misleading.
+  const showSavedFooter = (turn.savedUsd ?? 0) > 0;
 
   return (
-    <div className="rounded-lg bg-[#1A3F54]/30 border border-[#1A3F54]/60 p-3 text-xs font-mono space-y-2">
-      <div className="text-slate-300 font-semibold text-[11px] uppercase tracking-wide">
+    <div className="rounded-lg bg-card border border-border p-3 space-y-2">
+      <div className="text-foreground font-mono font-semibold text-[11px] uppercase tracking-wider">
         Turn {idx}
       </div>
 
-      {/* Semantic cache */}
       <Row
         label="Semantic cache"
         badge={turn.semantic.hit}
         detail={
           turn.semantic.hit
-            ? `sim=${(turn.semantic.similarity ?? 0).toFixed(3)} · saved $${(turn.semantic.savedUsd ?? 0).toFixed(4)}`
+            ? `sim=${(turn.semantic.similarity ?? 0).toFixed(3)} · saved ${formatMicro(turn.semantic.savedUsd)}`
             : turn.semantic.embedLatencyMs
-            ? `embed ${turn.semantic.embedLatencyMs}ms`
-            : undefined
+              ? `embed ${turn.semantic.embedLatencyMs}ms`
+              : undefined
         }
       />
 
-      {/* Tool results */}
       {turn.toolHits.length > 0 && (
-        <div className="pl-2 border-l border-[#1A3F54] space-y-1">
-          <div className="text-slate-500 text-[10px]">TOOLS</div>
+        <div className="pl-2.5 ml-1 border-l border-border space-y-1.5 pt-0.5">
+          <div className="text-muted-foreground text-[10px] uppercase tracking-widest font-medium">
+            Tools
+          </div>
           {turn.toolHits.map((t, j) => (
             <Row
-              key={j}
+              // tool order is stable within a turn, but combine name+index for safety
+              key={`${t.name}-${j}`}
               label={t.name}
               badge={t.hit}
               detail={`${t.latencyMs}ms`}
@@ -61,51 +68,54 @@ function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
         </div>
       )}
 
-      {/* LLM exact match */}
       {!turn.semantic.hit && (
         <Row
           label="LLM exact match"
           badge={turn.llmExactHit ?? false}
           detail={
             turn.promptTokens !== undefined
-              ? `in ${turn.promptTokens}t / out ${turn.completionTokens ?? 0}t · $${(turn.costUsd ?? 0).toFixed(5)}`
+              ? `in ${turn.promptTokens}t · out ${turn.completionTokens ?? 0}t · ${formatMicro(turn.costUsd)}`
               : undefined
           }
         />
       )}
 
-      {/* Session total */}
-      <div className="text-[#2DD4BF] text-[10px] pt-1">
-        Saved this turn: ${totalSaved}
-      </div>
+      {showSavedFooter && (
+        <div className="text-primary text-[10px] font-mono pt-1 border-t border-border">
+          Saved this turn: <span className="font-semibold">{formatMicro(turn.savedUsd)}</span>
+        </div>
+      )}
     </div>
   );
 }
 
-function Row({
-  label,
-  badge,
-  detail,
-}: {
-  label: string;
-  badge: boolean;
-  detail?: string;
-}) {
+function formatMicro(v: number | undefined): string {
+  if (v === undefined || v === null) return "-";
+  if (v === 0) return "$0";
+  if (v < 0.0001) return `$${v.toExponential(2)}`;
+  return `$${v.toFixed(4)}`;
+}
+
+function Row({ label, badge, detail }: { label: string; badge: boolean; detail?: string }) {
   return (
-    <div className="flex items-center gap-2 text-[11px]">
-      <span className="text-slate-400 w-36 shrink-0 truncate">{label}</span>
-      <span
-        className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-          badge
-            ? "bg-emerald-500/20 text-emerald-400"
-            : "bg-slate-700/60 text-slate-400"
-        }`}
-      >
-        {badge ? "HIT" : "MISS"}
-      </span>
-      {detail && (
-        <span className="text-slate-500 truncate">{detail}</span>
-      )}
+    <div className="flex items-center gap-2 text-[11px] font-mono">
+      <span className="text-muted-foreground w-32 shrink-0 truncate">{label}</span>
+      <Badge hit={badge} />
+      {detail && <span className="text-muted-foreground/80 truncate text-[10.5px]">{detail}</span>}
     </div>
+  );
+}
+
+function Badge({ hit }: { hit: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-wider shrink-0 ${
+        hit
+          ? "bg-success/15 text-success border border-success/30"
+          : "bg-muted text-muted-foreground border border-border"
+      }`}
+    >
+      {hit ? "HIT" : "MISS"}
+    </span>
   );
 }
