@@ -67,7 +67,17 @@ export async function POST(req: Request) {
 
   const uiMessages = body.messages ?? [];
   const lastUser = [...uiMessages].reverse().find((m) => m.role === "user");
-  const lastUserText = lastUser ? uiMessageText(lastUser) : "";
+
+  // Distinguish "no user message at all" from "user message that's too short".
+  // Without this, an empty `messages` array would surface "Query too short"
+  // which is misleading.
+  if (!lastUser) {
+    return Response.json(
+      { error: "Request must include at least one user message." },
+      { status: 400 },
+    );
+  }
+  const lastUserText = uiMessageText(lastUser);
 
   // Sync guardrails: cheap and synchronous (length, control chars, type).
   const guardSync = validateInputSync(lastUserText);
@@ -96,13 +106,17 @@ export async function POST(req: Request) {
   const persistedQuery = scrubSecrets(lastUserText);
 
   // ---- Semantic cache: check ----
+  // Fallback shape mirrors what the cache package returns on a true miss so
+  // every downstream access (confidence, nearestMiss, costSaved) is safe.
+  type SemanticHit = Awaited<ReturnType<typeof semanticCache.check>>;
+  const semanticMiss: SemanticHit = { hit: false, confidence: "miss" };
   const semanticStart = Date.now();
-  let semanticHit;
+  let semanticHit: SemanticHit;
   try {
     semanticHit = await semanticCache.check(lastUserText);
   } catch (e) {
     console.warn("semantic cache check failed:", e);
-    semanticHit = { hit: false } as Awaited<ReturnType<typeof semanticCache.check>>;
+    semanticHit = semanticMiss;
   }
   const embedLatencyMs = Date.now() - semanticStart;
 

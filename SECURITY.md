@@ -1,10 +1,16 @@
 # Security policy
 
+> **Forking this repo?** The contact below is a placeholder using the
+> reserved `.invalid` TLD so it can never be a real address. Replace it
+> with one you actually monitor _before_ publishing your fork - otherwise
+> security reports will fall on the floor. (`grep -R REPLACE-ME` to find
+> all spots.)
+
 ## Reporting a vulnerability
 
-Please email **security@betterdb.example** with a description of the issue,
-reproduction steps, and the impact you've assessed. We aim to respond within
-3 business days.
+Please email **REPLACE-ME-BEFORE-PUBLISHING@example.invalid** with a
+description of the issue, reproduction steps, and the impact you've assessed.
+We aim to respond within 3 business days.
 
 Do **not** open a public GitHub issue for security reports. Once a fix is
 prepared and shipped, we'll publish a brief advisory crediting the reporter

@@ -24,10 +24,15 @@ const CHARS_PER_TOKEN = 4;
 /** Default chunk budget (~tokens) before splitting. */
 export const DEFAULT_MAX_TOKENS = 800;
 
-/** Identifier sent in the User-Agent header. */
+/**
+ * Identifier sent in the User-Agent header. Override via SCRAPE_USER_AGENT
+ * to advertise a contact address the upstream site can reach you at - the
+ * default below uses example.invalid so site owners get an obvious "this
+ * is a placeholder" rather than a deliverable wrong address.
+ */
 export const USER_AGENT =
   process.env.SCRAPE_USER_AGENT ??
-  "BetterDB-playground-ingest/1.0 (+https://github.com/betterdb/playground-chat; contact: oss@betterdb.example)";
+  "betterdb-playground-ingest/1.0 (+https://github.com/REPLACE-ME/playground-chat; contact: REPLACE-ME-BEFORE-PUBLISHING@example.invalid)";
 
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);

@@ -8,8 +8,10 @@ discriminatory remarks, or unwelcome sexual attention are not tolerated.
 ## Reporting
 
 If you experience or witness unacceptable behaviour in this project's spaces
-(GitHub issues, PRs, discussions), please email **conduct@betterdb.example**.
-Reports are confidential and reviewed by the maintainers.
+(GitHub issues, PRs, discussions), please email
+**REPLACE-ME-BEFORE-PUBLISHING@example.invalid** (forks: replace this with a
+real address you monitor before publishing). Reports are confidential and
+reviewed by the maintainers.
 
 ## Enforcement
 

@@ -3,6 +3,7 @@ import { SemanticCache } from "@betterdb/semantic-cache";
 import { valkey } from "./valkey";
 import { embedText } from "./embeddings";
 import { LLM_COST_TABLE } from "./pricing";
+import { getAnalytics } from "./analytics";
 
 /**
  * Tool tier and LLM tier of @betterdb/agent-cache, both backed by the same
@@ -34,10 +35,27 @@ export const semanticCache = new SemanticCache({
   costTable: LLM_COST_TABLE,
 });
 
-let _initialized = false;
+/**
+ * Single shared init promise. Two concurrent first-requests would otherwise
+ * both pass a boolean check before either had a chance to flip it, and we'd
+ * call `semanticCache.initialize()` twice (which races on FT.CREATE).
+ * Awaiting the same promise from every caller serialises this safely.
+ */
+let _initPromise: Promise<void> | null = null;
 
-export async function initCaches(): Promise<void> {
-  if (_initialized) return;
-  await semanticCache.initialize();
-  _initialized = true;
+export function initCaches(): Promise<void> {
+  if (!_initPromise) {
+    _initPromise = (async () => {
+      // Kick off the PostHog client construction (one valkey GET for the
+      // instance id) in parallel with semantic-cache init so the first
+      // chat turn doesn't pay either cost on its critical path.
+      await Promise.all([semanticCache.initialize(), getAnalytics().catch(() => undefined)]);
+    })().catch((err) => {
+      // Reset on failure so the next request can retry instead of being
+      // permanently stuck on a stale rejected promise.
+      _initPromise = null;
+      throw err;
+    });
+  }
+  return _initPromise;
 }
