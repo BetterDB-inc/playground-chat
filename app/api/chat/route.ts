@@ -106,6 +106,18 @@ export async function POST(req: Request) {
   }
   const embedLatencyMs = Date.now() - semanticStart;
 
+  // Diagnostic: when a query misses, log the nearest neighbour distance and
+  // the configured threshold so we can tell at a glance whether the cache is
+  // empty, the threshold is too tight, or something stale-evicted.
+  if (process.env.SEMANTIC_DEBUG === "true" && !semanticHit.hit) {
+    const nearest = semanticHit.nearestMiss?.similarity;
+    const threshold = Number(process.env.SEMANTIC_THRESHOLD ?? 0.08);
+    console.log(
+      `[semantic miss] threshold=${threshold} nearest=${nearest ?? "none"} ` +
+        `confidence=${semanticHit.confidence} prompt_chars=${lastUserText.length}`,
+    );
+  }
+
   if (semanticHit.hit && semanticHit.response) {
     const text = semanticHit.response;
     // costSaved comes from the cache itself when the original store() included
