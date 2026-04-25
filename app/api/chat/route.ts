@@ -1,131 +1,196 @@
-import { streamText, wrapLanguageModel } from "ai";
+import {
+  streamText,
+  wrapLanguageModel,
+  stepCountIs,
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  type UIMessage,
+} from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAgentCacheMiddleware } from "@betterdb/agent-cache/ai";
 import { initCaches, agentCache, semanticCache } from "@/lib/cache";
 import { tools } from "@/lib/tools";
-import { rateLimit, isBudgetExceeded, checkBudget } from "@/lib/rate-limit";
-import { validateInput } from "@/lib/guardrails";
+import { rateLimit, reserveBudget, settleBudget } from "@/lib/rate-limit";
+import { validateInputSync, moderateInput } from "@/lib/guardrails";
 import { logTurn } from "@/lib/logger";
 import { recordTurn } from "@/lib/stats";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
-import type { ToolMeta } from "@/lib/types";
+import { validateEnv } from "@/lib/env";
+import { detectClientIp } from "@/lib/client-ip";
+import { scrubSecrets } from "@/lib/secrets";
+import { estimateLlmCost, approximateTokens } from "@/lib/pricing";
+import { captureChatTurn } from "@/lib/analytics";
+import type { ToolMeta, TurnMetrics } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
-// Cost estimate for gpt-4o-mini: $0.00015/1k in, $0.0006/1k out
-function estimateCost(model: string, inputTokens: number, outputTokens: number): number {
-  const table: Record<string, { in: number; out: number }> = {
-    "gpt-4o-mini": { in: 0.00015, out: 0.0006 },
-    "gpt-4o": { in: 0.0025, out: 0.01 },
-  };
-  const rates = table[model] ?? { in: 0.00015, out: 0.0006 };
-  return (inputTokens / 1000) * rates.in + (outputTokens / 1000) * rates.out;
+/** Pessimistic per-call cost estimate for the budget gate. */
+function estimatedRequestCost(model: string, promptText: string): number {
+  // Assume ~2x prompt tokens for output as a conservative cap.
+  const promptTokens = approximateTokens(promptText);
+  return estimateLlmCost(model, promptTokens, promptTokens * 2);
+}
+
+function uiMessageText(m: UIMessage): string {
+  return m.parts
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("");
 }
 
 export async function POST(req: Request) {
+  // Fail fast if the deployment is misconfigured. validateEnv() is memoized
+  // so this is essentially free after the first call.
+  let env;
+  try {
+    env = validateEnv();
+  } catch (e) {
+    return Response.json(
+      { error: e instanceof Error ? e.message : "Server misconfigured" },
+      { status: 500 },
+    );
+  }
+
   await initCaches();
 
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const ip = detectClientIp(req);
+  const turnStart = Date.now();
 
-  let body: { messages?: unknown[] };
+  let body: { messages?: UIMessage[] };
   try {
-    body = (await req.json()) as { messages?: unknown[] };
+    body = (await req.json()) as { messages?: UIMessage[] };
   } catch {
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const messages = (body.messages ?? []) as Array<{
-    role: string;
-    content: string;
-  }>;
-  const lastUser = [...messages]
-    .reverse()
-    .find((m) => m.role === "user")?.content ?? "";
+  const uiMessages = body.messages ?? [];
+  const lastUser = [...uiMessages].reverse().find((m) => m.role === "user");
+  const lastUserText = lastUser ? uiMessageText(lastUser) : "";
 
-  // Guardrails
-  const guard = validateInput(lastUser);
-  if (!guard.ok) {
-    return Response.json({ error: guard.reason }, { status: 400 });
+  // Sync guardrails: cheap and synchronous (length, control chars, type).
+  const guardSync = validateInputSync(lastUserText);
+  if (!guardSync.ok) {
+    return Response.json({ error: guardSync.reason }, { status: 400 });
   }
 
-  // Rate limiting
+  // Async guardrails: OpenAI Moderation (no-op unless MODERATION_ENABLED).
+  const guardAsync = await moderateInput(lastUserText);
+  if (!guardAsync.ok) {
+    return Response.json({ error: guardAsync.reason }, { status: 400 });
+  }
+
+  // Rate limit (atomic Lua, sliding window).
   const rl = await rateLimit(ip);
   if (!rl.ok) {
     return Response.json(
       { error: "rate_limited", retryAfter: rl.retryAfter },
-      { status: 429 }
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter ?? 60) } },
     );
   }
 
-  // Semantic cache check
+  // Strip credentials from the prompt before it's stored anywhere
+  // (semantic cache, logs). Doesn't change what the model sees during this
+  // request - only what we persist.
+  const persistedQuery = scrubSecrets(lastUserText);
+
+  // ---- Semantic cache: check ----
   const semanticStart = Date.now();
-  const semanticHit = await semanticCache.check(lastUser);
+  let semanticHit;
+  try {
+    semanticHit = await semanticCache.check(lastUserText);
+  } catch (e) {
+    console.warn("semantic cache check failed:", e);
+    semanticHit = { hit: false } as Awaited<ReturnType<typeof semanticCache.check>>;
+  }
   const embedLatencyMs = Date.now() - semanticStart;
 
   if (semanticHit.hit && semanticHit.response) {
-    const savedUsd = 0.001; // estimated savings for a typical response
+    const text = semanticHit.response;
+    // costSaved comes from the cache itself when the original store() included
+    // model + token counts. If the original was stored without those (e.g.
+    // pre-warm script), it'll be undefined - we report 0 in that case.
+    const savedUsd = semanticHit.costSaved ?? 0;
+
     await Promise.all([
       logTurn({
         ip,
-        q: lastUser,
-        semantic: { hit: true, similarity: semanticHit.similarity, savedUsd },
+        q: persistedQuery,
+        semantic: {
+          hit: true,
+          similarity: semanticHit.similarity,
+          savedUsd,
+        },
         toolHits: [],
         costUsd: 0,
       }),
       recordTurn({ semanticHit: true, savedUsd }),
+      // PostHog: send the raw prompt + IP. Fire-and-forget - never blocks
+      // the response. Telemetry is opt-in (BETTERDB_POSTHOG_API_KEY) and
+      // can be disabled with BETTERDB_TELEMETRY=false.
+      captureChatTurn({
+        prompt: lastUserText,
+        ip,
+        semantic: {
+          hit: true,
+          similarity: semanticHit.similarity,
+          savedUsd,
+          embedLatencyMs,
+        },
+        toolHits: [],
+        model: env.llmModel,
+        costUsd: 0,
+        totalLatencyMs: Date.now() - turnStart,
+      }),
     ]);
 
-    const metricsHeader = JSON.stringify({
-      semanticHit: true,
-      similarity: semanticHit.similarity,
-      embedLatencyMs,
-      savedUsd,
-      toolHits: [],
-    });
-
-    // Stream the cached response as SSE
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        const text = semanticHit.response!;
-        // Send as AI SDK data stream format
-        controller.enqueue(
-          encoder.encode(`0:${JSON.stringify(text)}\n`)
-        );
-        controller.enqueue(
-          encoder.encode(
-            `2:${JSON.stringify([{ type: "metrics", data: JSON.parse(metricsHeader) }])}\n`
-          )
-        );
-        controller.close();
+    // Hand-roll a v6 UIMessageStream for the cached response. The AI SDK's
+    // helpers all assume there's an underlying model call - for cache hits
+    // we synthesise the same protocol manually so the client treats it
+    // identically to a fresh streaming response.
+    const stream = createUIMessageStream({
+      execute: ({ writer }) => {
+        const id = `cached-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const metrics: TurnMetrics = {
+          semantic: {
+            hit: true,
+            similarity: semanticHit.similarity,
+            savedUsd,
+            embedLatencyMs,
+          },
+          toolHits: [],
+          savedUsd,
+        };
+        writer.write({ type: "start", messageMetadata: metrics });
+        writer.write({ type: "text-start", id });
+        writer.write({ type: "text-delta", id, delta: text });
+        writer.write({ type: "text-end", id });
+        writer.write({ type: "finish", messageMetadata: metrics });
       },
     });
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "X-Metrics": metricsHeader,
-        "Cache-Control": "no-cache",
-      },
-    });
+    return createUIMessageStreamResponse({ stream });
   }
 
-  // Budget check before calling LLM
-  const budgetExceeded = await isBudgetExceeded();
-  if (budgetExceeded) {
+  // ---- Budget gate: atomic reserve, settle in onFinish ----
+  const estimatedCost = estimatedRequestCost(env.llmModel, lastUserText);
+  const reserve = await reserveBudget(estimatedCost);
+  if (!reserve.ok) {
     return Response.json(
-      { error: "Daily budget exceeded. Try again tomorrow." },
-      { status: 429 }
+      {
+        error: "budget_exceeded",
+        message: "Daily budget exceeded. Try again tomorrow.",
+        spentUsd: reserve.spentUsd,
+        budgetUsd: reserve.budgetUsd,
+      },
+      { status: 429 },
     );
   }
 
-  // Build cached LLM model
-  const llmModel = process.env.LLM_MODEL ?? "gpt-4o-mini";
-  const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  // ---- LLM call ----
+  const openai = createOpenAI({ apiKey: env.openaiKey });
   const model = wrapLanguageModel({
-    model: openai(llmModel),
+    model: openai(env.llmModel),
     middleware: createAgentCacheMiddleware({ cache: agentCache }),
   });
 
@@ -134,44 +199,87 @@ export async function POST(req: Request) {
   const result = streamText({
     model,
     system: SYSTEM_PROMPT,
-    messages,
+    messages: await convertToModelMessages(uiMessages),
     tools,
-    maxSteps: 5,
+    stopWhen: stepCountIs(5),
     onStepFinish: ({ toolResults }) => {
       for (const tr of toolResults ?? []) {
-        const meta = (tr.result as { _meta?: ToolMeta } | undefined)?._meta;
+        const meta = (tr.output as { _meta?: ToolMeta } | undefined)?._meta;
         if (meta) toolMetas.push(meta);
       }
     },
     onFinish: async ({ text, usage }) => {
-      const inputTokens = usage?.promptTokens ?? 0;
-      const outputTokens = usage?.completionTokens ?? 0;
-      const costUsd = estimateCost(llmModel, inputTokens, outputTokens);
-      const savedUsd = toolMetas.filter((t) => t.hit).length * 0.0001;
+      const inputTokens = usage?.inputTokens ?? 0;
+      const outputTokens = usage?.outputTokens ?? 0;
+      const actualCost = estimateLlmCost(env.llmModel, inputTokens, outputTokens);
+
+      // True up the budget reservation - we may have estimated low.
+      void settleBudget(estimatedCost, actualCost);
+
+      // Store with model + tokens so subsequent semantic-cache hits can
+      // report an accurate `costSaved`. This is the key change vs. before:
+      // the cache itself becomes the source of truth for savings.
+      const semanticStorePromise = semanticCache
+        .store(lastUserText, text, {
+          model: env.llmModel,
+          inputTokens,
+          outputTokens,
+        })
+        .catch((e) => console.warn("semantic cache store failed:", e));
 
       await Promise.all([
-        semanticCache.store(lastUser, text),
-        checkBudget(costUsd),
+        semanticStorePromise,
         logTurn({
           ip,
-          q: lastUser,
+          q: persistedQuery,
           semantic: { hit: false },
           toolHits: toolMetas,
-          usage: { promptTokens: inputTokens, completionTokens: outputTokens },
-          costUsd,
+          usage: {
+            promptTokens: inputTokens,
+            completionTokens: outputTokens,
+          },
+          costUsd: actualCost,
         }),
-        recordTurn({ semanticHit: false, savedUsd, costUsd }),
+        recordTurn({
+          semanticHit: false,
+          savedUsd: 0,
+          costUsd: actualCost,
+        }),
+        // Raw prompt + IP + full per-turn metrics → PostHog. Same opt-in
+        // and opt-out as the cache-hit path above.
+        captureChatTurn({
+          prompt: lastUserText,
+          ip,
+          semantic: { hit: false, embedLatencyMs },
+          toolHits: toolMetas,
+          model: env.llmModel,
+          promptTokens: inputTokens,
+          completionTokens: outputTokens,
+          costUsd: actualCost,
+          totalLatencyMs: Date.now() - turnStart,
+        }),
       ]);
     },
   });
 
-  return result.toDataStreamResponse({
-    headers: {
-      "X-Metrics": JSON.stringify({
-        semanticHit: false,
-        embedLatencyMs,
+  return result.toUIMessageStreamResponse({
+    messageMetadata: ({ part }) => {
+      if (part.type !== "finish") return undefined;
+      const inputTokens = part.totalUsage?.inputTokens ?? 0;
+      const outputTokens = part.totalUsage?.outputTokens ?? 0;
+      const costUsd = estimateLlmCost(env.llmModel, inputTokens, outputTokens);
+      const metrics: TurnMetrics = {
+        semantic: { hit: false, embedLatencyMs },
         toolHits: toolMetas,
-      }),
+        promptTokens: inputTokens,
+        completionTokens: outputTokens,
+        costUsd,
+        // No fabricated savedUsd here. Tool-tier savings are tracked
+        // automatically by agent-cache's internal counters and reported via
+        // /api/stats. Per-turn savedUsd only makes sense on a semantic hit.
+        savedUsd: 0,
+      };
+      return metrics;
     },
   });
 }
