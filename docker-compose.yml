@@ -1,11 +1,26 @@
+# Local-dev compose for the playground.
+#
+# `valkey-bundle` ships a Valkey server with the search/bloom/json/ldap
+# modules pre-loaded, so we don't need to specify a `--loadmodule` flag -
+# the entrypoint does it for us.
+#
+# We pin to a specific tag (not `:latest`) so reproducing a contributor's
+# bug doesn't depend on whatever the registry happened to point at when
+# they pulled. Bump deliberately when you want a newer version.
 services:
   valkey:
-    image: valkey/valkey-bundle:latest
+    image: valkey/valkey-bundle:8.1
+    container_name: betterdb-playground-valkey
     ports:
       - "6399:6379"
-    command: ["valkey-server", "--loadmodule", "/opt/valkey-stack/lib/libsearch.so"]
     volumes:
       - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   valkey-data:

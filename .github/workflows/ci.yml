@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        # Build needs OPENAI_API_KEY-shaped env so validateEnv() doesn't reject
+        # at module-load on routes that import lib/env. We pass a dummy key -
+        # next build doesn't actually invoke any route at compile time for
+        # this app, but env validation happens lazily so this is just future-
+        # proofing.
+        env:
+          OPENAI_API_KEY: sk-ci-fake-key-for-build-only
+        run: pnpm build

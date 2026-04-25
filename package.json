@@ -2,40 +2,57 @@
   "name": "betterdb-playground-chat",
   "version": "0.1.0",
   "private": true,
+  "description": "Open-source chat playground demonstrating @betterdb/agent-cache + @betterdb/semantic-cache against Valkey & Redis OSS docs.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "ingest:valkey": "tsx scripts/ingest-valkey-docs.ts",
-    "ingest:redis": "tsx scripts/ingest-redis-commands.ts",
-    "build:index": "tsx scripts/build-index.ts",
-    "seed": "tsx scripts/seed-cache.ts",
-    "tail:logs": "tsx scripts/tail-logs.ts"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "ingest:valkey": "tsx --env-file=.env scripts/ingest-valkey-docs.ts",
+    "ingest:redis": "tsx --env-file=.env scripts/ingest-redis-commands.ts",
+    "ingest": "pnpm ingest:valkey && pnpm ingest:redis",
+    "build:index": "tsx --env-file=.env scripts/build-index.ts",
+    "seed": "tsx --env-file=.env scripts/seed-cache.ts",
+    "tail:logs": "tsx --env-file=.env scripts/tail-logs.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.53",
+    "@ai-sdk/react": "^3.0.170",
+    "@betterdb/agent-cache": "^0.2.0",
+    "@betterdb/semantic-cache": "^0.2.0",
+    "ai": "^6.0.161",
+    "iovalkey": "^0.3.1",
     "next": "15.3.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "ai": "^6.0.161",
-    "@ai-sdk/openai": "^1.3.22",
-    "@ai-sdk/anthropic": "^1.2.12",
-    "iovalkey": "^0.3.1",
-    "@betterdb/agent-cache": "^0.2.0",
-    "@betterdb/semantic-cache": "^0.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zod": "^3.24.1"
   },
+  "optionalDependencies": {
+    "posthog-node": "^5.29.2"
+  },
   "devDependencies": {
-    "typescript": "^5.8.3",
-    "tailwindcss": "^3.4.17",
-    "postcss": "^8.5.3",
-    "autoprefixer": "^10.4.21",
     "@types/node": "^22.15.3",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
-    "tsx": "^4.19.3",
+    "autoprefixer": "^10.4.21",
     "eslint": "^9.26.0",
-    "eslint-config-next": "15.3.1"
+    "eslint-config-next": "15.3.1",
+    "postcss": "^8.5.3",
+    "prettier": "^3.4.2",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.8"
   }
 }
