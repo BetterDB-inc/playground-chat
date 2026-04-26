@@ -34,9 +34,19 @@ export function MetricsPanel({ turns }: Props) {
 
       {/* Footer */}
       <div className="px-4 py-2.5 border-t border-border">
-        <p className="text-[10px] text-muted-foreground/70 text-center">
-          Powered by <span className="text-primary font-medium">@betterdb/agent-cache</span> &amp;{" "}
-          <span className="text-primary font-medium">@betterdb/semantic-cache</span>
+        <p className="text-[10px] text-muted-foreground/70 text-center leading-relaxed">
+          Powered by{" "}
+          <FooterLink href="https://github.com/BetterDB-inc/monitor/tree/main/packages/agent-cache">
+            @betterdb/agent-cache
+          </FooterLink>{" "}
+          &amp;{" "}
+          <FooterLink href="https://github.com/BetterDB-inc/monitor/tree/main/packages/semantic-cache">
+            @betterdb/semantic-cache
+          </FooterLink>
+          <br />
+          <FooterLink href="https://github.com/BetterDB-inc/playground-chat">
+            Source on GitHub
+          </FooterLink>
         </p>
       </div>
     </aside>
@@ -48,5 +58,23 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2.5 font-medium">
       {children}
     </div>
+  );
+}
+
+/**
+ * Footer link styled to match the previous static footer text. Always opens in
+ * a new tab and uses noopener+noreferrer because we never want a third-party
+ * page to inherit a window reference back to us.
+ */
+function FooterLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-primary font-medium hover:underline underline-offset-2 transition-colors"
+    >
+      {children}
+    </a>
   );
 }
