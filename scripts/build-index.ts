@@ -196,7 +196,15 @@ async function main() {
   console.log("Done.");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // Force exit. Importing anything from lib/valkey.ts instantiates the
+    // singleton client at module-load time which keeps the event loop alive
+    // even after our explicit client.quit() above; this was making the script
+    // appear to hang after printing "Done.".
+    process.exit(0);
+  })
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });

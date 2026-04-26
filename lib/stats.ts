@@ -1,5 +1,5 @@
 import { valkey } from "./valkey";
-import { agentCache, semanticCache } from "./cache";
+import { agentCache, semanticCache, initCaches } from "./cache";
 import type { GlobalStats } from "./types";
 
 /**
@@ -33,6 +33,13 @@ export async function recordTurn(opts: {
 }
 
 export async function readStats(): Promise<GlobalStats> {
+  // Ensure the cache packages are initialised before calling .stats() on
+  // them - otherwise semanticCache.stats() throws `not initialized`, the
+  // catch() below swallows it, and we silently report 0 saved. /api/stats
+  // is reachable without going through the chat route's own initCaches()
+  // call, so we do it here defensively.
+  await initCaches();
+
   const [msgsRaw, hitsRaw, missesRaw, agentStats, semStats] = await Promise.all([
     valkey.get(K.msgs),
     valkey.get(K.hits),
