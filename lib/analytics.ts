@@ -52,11 +52,15 @@ export interface ChatTurnEvent {
 
 interface AnalyticsClient {
   capture(event: ChatTurnEvent): void;
+  flush(): Promise<void>;
   shutdown(): Promise<void>;
 }
 
 const NOOP: AnalyticsClient = {
   capture: () => {
+    /* no-op */
+  },
+  flush: async () => {
     /* no-op */
   },
   shutdown: async () => {
@@ -115,6 +119,7 @@ async function buildClient(): Promise<AnalyticsClient> {
           event: string;
           properties: Record<string, unknown>;
         }) => void;
+        flush: () => Promise<void>;
         shutdown: () => Promise<void>;
       };
     };
@@ -151,6 +156,13 @@ async function buildClient(): Promise<AnalyticsClient> {
           // Never let a telemetry hiccup affect the chat response.
         }
       },
+      flush: async () => {
+        try {
+          await ph.flush();
+        } catch {
+          /* swallow - never let a telemetry hiccup affect the chat response. */
+        }
+      },
       shutdown: async () => {
         try {
           await ph.shutdown();
@@ -182,4 +194,17 @@ export function getAnalytics(): Promise<AnalyticsClient> {
 export async function captureChatTurn(event: ChatTurnEvent): Promise<void> {
   const c = await getAnalytics();
   c.capture(event);
+}
+
+/**
+ * Force the in-memory PostHog queue to be sent NOW. Intended for use with
+ * Next.js's `after()` (or Vercel's `waitUntil`) so events buffered during a
+ * request are delivered before the serverless function gets frozen. Without
+ * this, on a low-traffic deployment most events never leave the lambda - the
+ * 10s flushInterval timer doesn't fire because the runtime suspends the
+ * process the moment the response stream closes.
+ */
+export async function flushAnalytics(): Promise<void> {
+  const c = await getAnalytics();
+  await c.flush();
 }

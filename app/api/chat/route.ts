@@ -20,7 +20,8 @@ import { validateEnv } from "@/lib/env";
 import { detectClientIp } from "@/lib/client-ip";
 import { scrubSecrets } from "@/lib/secrets";
 import { estimateLlmCost, approximateTokens } from "@/lib/pricing";
-import { captureChatTurn } from "@/lib/analytics";
+import { captureChatTurn, flushAnalytics } from "@/lib/analytics";
+import { after } from "next/server";
 import type { ToolMeta, TurnMetrics } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -156,10 +157,15 @@ export async function POST(req: Request) {
         savedUsd,
         totalLatencyMs: Date.now() - turnStart,
       }),
-      // PostHog: send the raw prompt + IP. Fire-and-forget - never blocks
-      // the response. Telemetry is opt-in (BETTERDB_POSTHOG_API_KEY) and
-      // can be disabled with BETTERDB_TELEMETRY=false.
-      captureChatTurn({
+    ]);
+
+    // PostHog: send the raw prompt + IP. Deferred via after() so the network
+    // round-trip happens AFTER the response is sent, but before the lambda
+    // freezes - guaranteeing delivery on serverless without adding latency.
+    // Telemetry is opt-in (BETTERDB_POSTHOG_API_KEY) and can be disabled
+    // with BETTERDB_TELEMETRY=false; both paths NOOP when off.
+    after(async () => {
+      await captureChatTurn({
         prompt: lastUserText,
         ip,
         semantic: {
@@ -172,8 +178,9 @@ export async function POST(req: Request) {
         model: env.llmModel,
         costUsd: 0,
         totalLatencyMs: Date.now() - turnStart,
-      }),
-    ]);
+      });
+      await flushAnalytics();
+    });
 
     // Hand-roll a v6 UIMessageStream for the cached response. The AI SDK's
     // helpers all assume there's an underlying model call - for cache hits
@@ -276,9 +283,16 @@ export async function POST(req: Request) {
           costUsd: actualCost,
           totalLatencyMs: Date.now() - turnStart,
         }),
-        // Raw prompt + IP + full per-turn metrics → PostHog. Same opt-in
-        // and opt-out as the cache-hit path above.
-        captureChatTurn({
+      ]);
+
+      // Raw prompt + IP + full per-turn metrics → PostHog. Same opt-in and
+      // opt-out as the cache-hit path above. Deferred via after() so the
+      // PostHog HTTP round-trip runs after the stream closes but before the
+      // lambda is frozen - the previous in-band fire-and-forget pattern was
+      // dropping these events on serverless because the 10s flush timer
+      // never fired before the function exited.
+      after(async () => {
+        await captureChatTurn({
           prompt: lastUserText,
           ip,
           semantic: { hit: false, embedLatencyMs },
@@ -288,8 +302,9 @@ export async function POST(req: Request) {
           completionTokens: outputTokens,
           costUsd: actualCost,
           totalLatencyMs: Date.now() - turnStart,
-        }),
-      ]);
+        });
+        await flushAnalytics();
+      });
     },
   });
 
