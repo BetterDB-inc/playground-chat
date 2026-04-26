@@ -19,10 +19,42 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
+/**
+ * `metadataBase` makes every relative URL in `openGraph.images`,
+ * `twitter.images`, etc. resolve to absolute URLs (Open Graph and Twitter
+ * cards both reject relative paths). Override via `NEXT_PUBLIC_SITE_URL`
+ * on Vercel preview deploys so previews don't get production OG cards.
+ */
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://chat.betterdb.com";
+
+const TITLE = "BetterDB Playground - RESP-compatible DBs and BetterDB";
+const DESCRIPTION =
+  "Open-source RAG chatbot over Valkey, Redis OSS, Dragonfly, and BetterDB " +
+  "docs. Live demo of @betterdb/agent-cache and @betterdb/semantic-cache " +
+  "with real-time hit/miss metrics.";
+
 export const metadata: Metadata = {
-  title: "BetterDB Playground - Valkey & Redis Chat",
-  description:
-    "An open-source RAG chatbot trained on Valkey and Redis OSS docs, demonstrating @betterdb/agent-cache and @betterdb/semantic-cache live.",
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  // Image at app/opengraph-image.png is auto-detected by Next.js and emitted
+  // as <meta property="og:image">. We only need to declare the textual OG
+  // fields here; the image binding is by file convention.
+  openGraph: {
+    type: "website",
+    title: TITLE,
+    description: DESCRIPTION,
+    siteName: "BetterDB Playground",
+    url: SITE_URL,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+    // No `images` field: Twitter clients fall back to og:image, which Next
+    // wires automatically from app/opengraph-image.png. One image file,
+    // both networks served.
+  },
 };
 
 // Inline script that runs before paint to prevent a flash of the wrong theme.
