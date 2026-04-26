@@ -38,7 +38,6 @@ export function validateInputSync(input: unknown): GuardResult {
   }
   // Reject ASCII control characters except tab/newline (common copy-paste
   // artefacts that confuse downstream tokenisers).
-  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u0008\u000b-\u001f]/.test(trimmed)) {
     return { ok: false, reason: "Query contains invalid control characters." };
   }

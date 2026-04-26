@@ -1,7 +1,6 @@
 import Valkey, { type RedisOptions } from "iovalkey";
 
 declare global {
-  // eslint-disable-next-line no-var
   var _valkey: Valkey | undefined;
 }
 

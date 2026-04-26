@@ -35,10 +35,14 @@ export function useTheme() {
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
   const [mounted, setMounted] = useState(false);
 
-  // Sync with stored value after mount (avoid hydration mismatch).
+  // Sync with stored value after mount (avoid hydration mismatch). The
+  // setState-in-effect rule complains here, but there is no other way to
+  // pull a value from localStorage on first client render and reflect it
+  // in state. Suppressed deliberately for this single legitimate case.
   useEffect(() => {
     const stored = getStoredTheme();
     const resolved = resolveTheme(stored);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setThemeState(stored);
     setResolvedTheme(resolved);
     applyTheme(resolved);
