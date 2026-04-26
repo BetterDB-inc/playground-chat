@@ -36,12 +36,8 @@ interface FaqRow {
  * Tune via FAQ_REPRESENTATIVE_INPUT_TOKENS / FAQ_REPRESENTATIVE_OUTPUT_TOKENS
  * if your real chat turns burn meaningfully different token counts.
  */
-const REPRESENTATIVE_INPUT_TOKENS = Number(
-  process.env.FAQ_REPRESENTATIVE_INPUT_TOKENS ?? 5000,
-);
-const REPRESENTATIVE_OUTPUT_TOKENS = Number(
-  process.env.FAQ_REPRESENTATIVE_OUTPUT_TOKENS ?? 300,
-);
+const REPRESENTATIVE_INPUT_TOKENS = Number(process.env.FAQ_REPRESENTATIVE_INPUT_TOKENS ?? 5000);
+const REPRESENTATIVE_OUTPUT_TOKENS = Number(process.env.FAQ_REPRESENTATIVE_OUTPUT_TOKENS ?? 300);
 
 async function main() {
   const env = validateEnv();

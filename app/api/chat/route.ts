@@ -151,7 +151,11 @@ export async function POST(req: Request) {
         toolHits: [],
         costUsd: 0,
       }),
-      recordTurn({ semanticHit: true, savedUsd }),
+      recordTurn({
+        semanticHit: true,
+        savedUsd,
+        totalLatencyMs: Date.now() - turnStart,
+      }),
       // PostHog: send the raw prompt + IP. Fire-and-forget - never blocks
       // the response. Telemetry is opt-in (BETTERDB_POSTHOG_API_KEY) and
       // can be disabled with BETTERDB_TELEMETRY=false.
@@ -270,6 +274,7 @@ export async function POST(req: Request) {
           semanticHit: false,
           savedUsd: 0,
           costUsd: actualCost,
+          totalLatencyMs: Date.now() - turnStart,
         }),
         // Raw prompt + IP + full per-turn metrics → PostHog. Same opt-in
         // and opt-out as the cache-hit path above.

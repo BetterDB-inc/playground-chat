@@ -44,7 +44,7 @@ function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
         badge={turn.semantic.hit}
         detail={
           turn.semantic.hit
-            ? `sim=${(turn.semantic.similarity ?? 0).toFixed(3)} · saved ${formatMicro(turn.semantic.savedUsd)}`
+            ? `${formatSimilarity(turn.semantic.similarity)} match · saved ${formatMicro(turn.semantic.savedUsd)}`
             : turn.semantic.embedLatencyMs
               ? `embed ${turn.semantic.embedLatencyMs}ms`
               : undefined
@@ -87,6 +87,24 @@ function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
       )}
     </div>
   );
+}
+
+/**
+ * Convert cosine DISTANCE (0-2 scale, what semantic-cache returns) into a
+ * human-friendly similarity percentage (0-100%, higher = closer match).
+ *
+ *   distance 0.0  -> 100% (identical embeddings)
+ *   distance 0.08 ->  96% (typical hit at our default threshold)
+ *   distance 1.0  ->  50% (orthogonal vectors)
+ *   distance 2.0  ->   0% (opposite vectors)
+ *
+ * The Math.max(0, ...) clamp removes the occasional `-0.000` that fp math
+ * produces for true matches.
+ */
+function formatSimilarity(distance: number | undefined): string {
+  if (distance === undefined || distance === null) return "—";
+  const sim = Math.max(0, Math.min(1, 1 - distance / 2));
+  return `${(sim * 100).toFixed(1)}%`;
 }
 
 function formatMicro(v: number | undefined): string {

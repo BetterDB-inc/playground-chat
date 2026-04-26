@@ -9,6 +9,12 @@ export interface SemanticMeta {
   similarity?: number;
   savedUsd?: number;
   embedLatencyMs?: number;
+  /**
+   * Total milliseconds the cache hit took (embedding + lookup + write back).
+   * Compared against a recent average for full LLM turns to compute "time
+   * saved" without having to call the LLM at all.
+   */
+  hitLatencyMs?: number;
 }
 
 export interface TurnMetrics {
@@ -27,6 +33,14 @@ export interface GlobalStats {
   totalHits: number;
   totalMisses: number;
   hitRate: number;
+  /**
+   * Total seconds saved by serving from cache instead of running the full
+   * LLM + tool pipeline. Measured as `(rolling avg miss latency) - hit
+   * latency` per hit, summed.
+   */
+  totalSavedSeconds: number;
+  /** Rolling average of full LLM-turn latency in ms (used for the calculation above). */
+  avgMissLatencyMs: number;
 }
 
 export interface LogEntry {

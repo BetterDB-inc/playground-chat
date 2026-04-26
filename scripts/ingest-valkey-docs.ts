@@ -39,27 +39,39 @@ async function ingestCommands(): Promise<Doc[]> {
   console.log(`Found ${uniqueLinks.length} command pages.`);
 
   const docs: Doc[] = [];
+  let i = 0;
   for (const url of uniqueLinks) {
+    i++;
     try {
       const page = await politeFetchHtml(url);
       const titleMatch = /<h1[^>]*>([^<]+)<\/h1>/i.exec(page);
       const title = titleMatch?.[1] ? titleMatch[1].trim() : (url.split("/").at(-1) ?? "unknown");
       const mainMatch = /<main[^>]*>([\s\S]*?)<\/main>/i.exec(page);
       const body = mainMatch?.[1] ? stripHtml(mainMatch[1]) : stripHtml(page);
-      if (body.length < 20) continue;
+      if (body.length < 20) {
+        if (i % 25 === 0)
+          console.log(`  [${i}/${uniqueLinks.length}] ${title} (skipped, too short)`);
+        continue;
+      }
       const chunks = chunkText(body);
-      chunks.forEach((content, i) => {
+      chunks.forEach((content, idx) => {
         docs.push({
-          id: makeId(["valkey-cmd", title, String(chunks.length > 1 ? i : "")]),
+          id: makeId(["valkey-cmd", title, String(chunks.length > 1 ? idx : "")]),
           source: "valkey",
           kind: "command",
-          title: chunks.length > 1 ? `${title} (${i + 1})` : title,
+          title: chunks.length > 1 ? `${title} (${idx + 1})` : title,
           url,
           content,
         });
       });
+      if (i % 25 === 0 || i === uniqueLinks.length) {
+        console.log(`  [${i}/${uniqueLinks.length}] ${title} (${chunks.length} chunk(s))`);
+      }
     } catch (e) {
-      console.warn(`  skip ${url}:`, e instanceof Error ? e.message : e);
+      console.warn(
+        `  [${i}/${uniqueLinks.length}] skip ${url}:`,
+        e instanceof Error ? e.message : e,
+      );
     }
   }
   return docs;
@@ -75,9 +87,14 @@ async function ingestTopics(): Promise<Doc[]> {
   console.log(`Found ${uniqueLinks.length} topic pages.`);
 
   const docs: Doc[] = [];
+  let i = 0;
   for (const url of uniqueLinks) {
+    i++;
     try {
       const page = await politeFetchHtml(url);
+      if (i % 10 === 0 || i === uniqueLinks.length) {
+        console.log(`  [${i}/${uniqueLinks.length}] ${url.split("/").at(-2) ?? url}`);
+      }
       const mainMatch = /<main[^>]*>([\s\S]*?)<\/main>/i.exec(page);
       const content = mainMatch?.[1] ?? page;
 

@@ -75,16 +75,55 @@ export function GlobalStats() {
   const hitPct = Math.round(stats.hitRate * 100);
 
   return (
-    <div className={`grid grid-cols-3 gap-2.5 ${stale ? "opacity-60" : ""}`}>
-      <StatCard label="Questions answered" value={stats.totalMessages.toLocaleString()} />
-      <StatCard label="Saved by caching" value={formatUsd(stats.totalSavedUsd)} accent />
-      <StatCard
-        label={stale ? "Cache hit rate (stale)" : "Cache hit rate"}
-        value={`${hitPct}%`}
-        accent={hitPct > 50}
-      />
+    <div className={`space-y-2.5 ${stale ? "opacity-60" : ""}`}>
+      <div className="grid grid-cols-3 gap-2.5">
+        <StatCard label="Questions answered" value={stats.totalMessages.toLocaleString()} />
+        <StatCard label="Saved by caching" value={formatUsd(stats.totalSavedUsd)} accent />
+        <StatCard
+          label={stale ? "Cache hit rate (stale)" : "Cache hit rate"}
+          value={`${hitPct}%`}
+          accent={hitPct > 50}
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-2.5">
+        <StatCard
+          label={`Time saved by caching (vs ${formatLatency(stats.avgMissLatencyMs)} avg miss)`}
+          value={formatDuration(stats.totalSavedSeconds)}
+          accent
+        />
+      </div>
     </div>
   );
+}
+
+/**
+ * Format a duration in seconds as a human-friendly string.
+ *  90    -> "1m 30s"
+ *  3700  -> "1h 1m"
+ *  259200 -> "3d 0h"
+ */
+function formatDuration(seconds: number): string {
+  if (seconds < 1) return "<1s";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return s ? `${m}m ${s}s` : `${m}m`;
+  }
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.round((seconds % 3600) / 60);
+    return m ? `${h}h ${m}m` : `${h}h`;
+  }
+  const d = Math.floor(seconds / 86400);
+  const h = Math.round((seconds % 86400) / 3600);
+  return h ? `${d}d ${h}h` : `${d}d`;
+}
+
+/** Format a millisecond latency as "1.2s" or "850ms". */
+function formatLatency(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 /**
