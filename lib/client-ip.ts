@@ -1,14 +1,24 @@
 /**
  * Best-effort client-IP detection across deploy targets.
  *
- * Vercel sets `x-real-ip` to the actual edge-detected client IP - that's the
- * trusted source. `x-forwarded-for` can be set or appended to by clients
- * upstream of the platform proxy, so we only fall back to it when no trusted
- * header is present (i.e. when running outside Vercel).
+ * Priority:
+ *   1. `cf-connecting-ip` - set ONLY when Cloudflare is in the request chain,
+ *      and always carries the real client (Cloudflare also sets x-real-ip in
+ *      that case, but to its own edge IP, which would mis-attribute every
+ *      request). Checking this first handles the Cloudflare-in-front-of-Vercel
+ *      and Cloudflare-in-front-of-anything cases correctly.
+ *   2. `x-real-ip` - what Vercel's edge sets when no other CDN is in front.
+ *      Vercel always populates this for inbound HTTP requests; client-supplied
+ *      values are stripped at the edge so it's not spoofable through Vercel.
+ *   3. `x-forwarded-for` - leftmost entry per RFC 7239. Untrusted unless we
+ *      control the proxy chain; this is the fallback for self-hosted setups
+ *      behind a known reverse proxy.
+ *   4. Opaque per-request token - no trusted IP available. Each caller gets
+ *      its own rate-limit bucket rather than sharing one with every other
+ *      unidentified client; never fall back to a literal "unknown" string.
  *
- * Importantly, we never fall back to a literal "unknown" string: every IP-less
- * request gets a per-request opaque token so one misbehaving client can't
- * exhaust the rate limit for everyone else who's missing the header.
+ * Verify the priority is producing sensible IPs after a deploy via
+ * GET /api/debug/ip?token=$IP_DEBUG_TOKEN (see app/api/debug/ip/route.ts).
  */
 
 import { createHmac, randomBytes } from "node:crypto";
@@ -16,25 +26,18 @@ import { createHmac, randomBytes } from "node:crypto";
 const SHARED_FALLBACK_PREFIX = "anon:";
 
 export function detectClientIp(req: Request): string {
-  const realIp = req.headers.get("x-real-ip");
-  if (realIp && realIp.trim()) return realIp.trim();
-
   const cfConnectingIp = req.headers.get("cf-connecting-ip");
   if (cfConnectingIp && cfConnectingIp.trim()) return cfConnectingIp.trim();
 
-  // x-forwarded-for is a comma-separated chain. The leftmost entry is the
-  // original client per RFC 7239, but it's untrusted unless we control the
-  // proxy chain. On Vercel, x-real-ip is preferred (above); this is the
-  // fallback for self-hosted deployments behind a known reverse proxy.
+  const realIp = req.headers.get("x-real-ip");
+  if (realIp && realIp.trim()) return realIp.trim();
+
   const xff = req.headers.get("x-forwarded-for");
   if (xff) {
     const first = xff.split(",")[0]?.trim();
     if (first) return first;
   }
 
-  // No trusted IP available - generate an opaque per-request token so this
-  // client gets its own rate-limit bucket rather than sharing one with every
-  // other unidentified caller.
   return SHARED_FALLBACK_PREFIX + randomBytes(8).toString("hex");
 }
 
