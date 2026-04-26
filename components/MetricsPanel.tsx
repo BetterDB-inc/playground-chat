@@ -36,12 +36,21 @@ export function MetricsPanel({ turns }: Props) {
       <div className="px-4 py-2.5 border-t border-border">
         <p className="text-[10px] text-muted-foreground/70 text-center leading-relaxed">
           Powered by{" "}
-          <FooterLink href="https://github.com/BetterDB-inc/monitor/tree/main/packages/agent-cache">
+          <FooterLink href="https://github.com/BetterDB-inc/monitor/tree/master/packages/agent-cache">
             @betterdb/agent-cache
           </FooterLink>{" "}
           &amp;{" "}
-          <FooterLink href="https://github.com/BetterDB-inc/monitor/tree/main/packages/semantic-cache">
+          <FooterLink href="https://github.com/BetterDB-inc/monitor/tree/master/packages/semantic-cache">
             @betterdb/semantic-cache
+          </FooterLink>
+          <br />
+          Also in Python:{" "}
+          <FooterLink href="https://github.com/BetterDB-inc/monitor/tree/master/packages/agent-cache-py">
+            agent-cache-py
+          </FooterLink>{" "}
+          &middot;{" "}
+          <FooterLink href="https://github.com/BetterDB-inc/monitor/tree/master/packages/semantic-cache-py">
+            semantic-cache-py
           </FooterLink>
           <br />
           <FooterLink href="https://github.com/BetterDB-inc/playground-chat">
