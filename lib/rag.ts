@@ -19,7 +19,11 @@ export interface DocResult {
   score: number;
 }
 
-export type DocSource = "valkey" | "redis";
+/** Indexed sources. Add a new entry here AND wire an ingest script for it. */
+export type DocSource = "valkey" | "redis" | "dragonfly" | "betterdb";
+
+/** Source values valid for command lookups (BetterDB has no commands). */
+export type CommandSource = Exclude<DocSource, "betterdb">;
 
 export async function vectorSearch(
   query: string,
@@ -54,7 +58,7 @@ export async function vectorSearch(
 
 export async function getCommandByName(
   name: string,
-  source?: DocSource,
+  source?: CommandSource,
 ): Promise<DocResult | null> {
   // RediSearch tokenises on whitespace and punctuation. Command names like
   // "FT.SEARCH" must be queried as escaped literals or the dot is treated as
@@ -94,6 +98,15 @@ export async function getModuleInfo(module: string): Promise<DocResult | null> {
   const term = MODULE_QUERY_TERMS[module.toLowerCase()] ?? module;
   const r = await vectorSearch(term, "valkey", 1);
   return r[0] ?? null;
+}
+
+/**
+ * Look up a BetterDB topic. Mirrors getModuleInfo but scoped to the
+ * betterdb source so the LLM has a focused way to ask "what does BetterDB
+ * do for X" without polluting the result with adjacent OSS docs.
+ */
+export async function getBetterDbInfo(topic: string): Promise<DocResult[]> {
+  return vectorSearch(topic, "betterdb", 3);
 }
 
 /**

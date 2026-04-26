@@ -8,12 +8,12 @@
 
 export const SUGGESTIONS = [
   "What is Valkey and how does it differ from Redis?",
-  "How do I use XADD and XREAD for streams?",
+  "How does Dragonfly compare to Valkey for performance?",
   "Explain the FT.SEARCH KNN vector search syntax",
-  "What persistence options does Valkey support?",
-  "How does valkey-search differ from RediSearch?",
+  "What does BetterDB's semantic cache do?",
+  "How do I migrate from Redis to Dragonfly?",
   "When should I use a Bloom filter vs a Set?",
-  "How do I configure Valkey Cluster for high availability?",
+  "How does valkey-search differ from RediSearch?",
 ] as const;
 
 interface Props {

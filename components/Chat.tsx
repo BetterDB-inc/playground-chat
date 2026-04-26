@@ -120,10 +120,10 @@ export function Chat({ onTurnComplete }: Props) {
         </div>
         <div className="min-w-0 flex-1">
           <h1 className="text-sm font-semibold text-foreground tracking-tight">
-            BetterDB Playground
+            RESP-compatible DBs and BetterDB
           </h1>
           <p className="text-xs text-muted-foreground truncate">
-            Valkey &amp; Redis OSS docs · RAG + caching demo
+            Valkey · Redis · Dragonfly · BetterDB docs · semantic and kv/agentic cache demo
           </p>
         </div>
         <ThemeToggle />
@@ -139,7 +139,7 @@ export function Chat({ onTurnComplete }: Props) {
           <div className="flex flex-col items-center justify-center h-full gap-8 text-center">
             <div className="space-y-2 max-w-md">
               <h2 className="text-2xl font-semibold text-foreground tracking-tight">
-                Ask about Valkey or Redis
+                Ask about Valkey, Redis, Dragonfly, or BetterDB
               </h2>
               <p className="text-muted-foreground text-sm">
                 Backed by live documentation with{" "}
@@ -215,7 +215,7 @@ export function Chat({ onTurnComplete }: Props) {
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about Valkey, Redis commands, or BetterDB…"
+            placeholder="Ask about Valkey, Redis, Dragonfly, or BetterDB…"
             autoComplete="off"
             autoFocus
             className="flex-1 bg-card border border-border rounded-xl px-4 py-3

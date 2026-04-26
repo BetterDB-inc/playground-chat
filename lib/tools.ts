@@ -5,8 +5,10 @@ import {
   vectorSearch,
   getCommandByName,
   getModuleInfo,
+  getBetterDbInfo,
   type DocResult,
   type DocSource,
+  type CommandSource,
 } from "./rag";
 import { estimateEmbedCost, approximateTokens } from "./pricing";
 import type { ToolMeta } from "./types";
@@ -77,14 +79,15 @@ function vectorSearchCost(query: string): number {
 export const tools = {
   search_docs: tool({
     description:
-      "Search the Valkey and Redis documentation using semantic similarity. " +
-      "Use this for any question about commands, configuration, concepts, or features.",
+      "Search the indexed documentation (Valkey, Redis OSS, Dragonfly, BetterDB) " +
+      "using semantic similarity. Use this for any question about commands, " +
+      "configuration, concepts, features, or BetterDB-specific behaviour.",
     inputSchema: z.object({
       query: z.string().describe("Natural language search query"),
       source: z
-        .enum(["valkey", "redis", "both"])
+        .enum(["valkey", "redis", "dragonfly", "betterdb", "all"])
         .optional()
-        .describe("Limit search to a specific source. Default: both"),
+        .describe("Limit search to a specific source. Default: all"),
       limit: z
         .number()
         .int()
@@ -99,7 +102,7 @@ export const tools = {
         { query, source, limit },
         async () => {
           const src: DocSource | undefined =
-            source === "valkey" || source === "redis" ? source : undefined;
+            source && source !== "all" ? (source as DocSource) : undefined;
           const results = await vectorSearch(query, src, limit);
           return results.map(projectDoc);
         },
@@ -109,11 +112,13 @@ export const tools = {
   }),
 
   get_command_reference: tool({
-    description: "Look up the full reference for a specific Valkey or Redis command by name.",
+    description:
+      "Look up the full reference for a specific RESP-protocol command by name " +
+      "from Valkey, Redis OSS, or Dragonfly docs.",
     inputSchema: z.object({
       command: z.string().describe("Command name, e.g. XADD, FT.SEARCH, HSET"),
       source: z
-        .enum(["valkey", "redis"])
+        .enum(["valkey", "redis", "dragonfly"])
         .optional()
         .describe("Which documentation to look in. Default: valkey"),
     }),
@@ -146,33 +151,37 @@ export const tools = {
 
   compare_commands: tool({
     description:
-      "Compare how the same command (or two related commands) behaves in Valkey vs Redis OSS.",
+      "Compare how the same command (or two related commands) behaves across " +
+      "Valkey, Redis OSS, and Dragonfly. Useful for migration-readiness questions.",
     inputSchema: z.object({
       command_a: z.string().describe("First command name"),
       command_b: z
         .string()
         .optional()
-        .describe("Second command name. If omitted, compares command_a across Valkey and Redis."),
-      source: z
-        .enum(["valkey", "redis", "both"])
+        .describe("Second command name. If omitted, compares command_a across two sources."),
+      source_a: z
+        .enum(["valkey", "redis", "dragonfly"])
         .optional()
-        .describe("Which sources to pull docs from. Default: both"),
+        .describe("Source for command_a. Default: valkey"),
+      source_b: z
+        .enum(["valkey", "redis", "dragonfly"])
+        .optional()
+        .describe("Source for command_b. Default: redis"),
     }),
-    execute: async ({ command_a, command_b, source = "both" }) => {
+    execute: async ({ command_a, command_b, source_a = "valkey", source_b = "redis" }) => {
       return cached(
         "compare_commands",
         {
           command_a: command_a.toUpperCase(),
           command_b: command_b?.toUpperCase(),
-          source,
+          source_a,
+          source_b,
         },
         async () => {
-          // Source-pair logic:
-          //   "both"   → command_a from valkey, command_b from redis (cross-source compare)
-          //   "valkey" → both halves from valkey (intra-source compare of two commands)
-          //   "redis"  → both halves from redis
-          const [srcA, srcB]: [DocSource, DocSource] =
-            source === "both" ? ["valkey", "redis"] : [source, source];
+          // Each half can come from any RESP-compatible source. Same source
+          // for both is allowed (e.g. compare two Valkey commands head-to-head).
+          const srcA = source_a as CommandSource;
+          const srcB = source_b as CommandSource;
           const [docA, docB] = await Promise.all([
             getCommandByName(command_a, srcA),
             getCommandByName(command_b ?? command_a, srcB),
@@ -223,6 +232,41 @@ export const tools = {
       );
     },
   }),
+
+  get_betterdb_info: tool({
+    description:
+      "Look up BetterDB-specific documentation: features, configuration, " +
+      "metrics, semantic + agent cache packages, anomaly detection, " +
+      "Vector/AI features, agent connection, migration. Use this when the " +
+      "user asks about BetterDB itself rather than the underlying RESP store.",
+    inputSchema: z.object({
+      topic: z
+        .string()
+        .describe("Free-text topic (e.g. 'semantic cache configuration', 'prometheus metrics')."),
+    }),
+    execute: async ({ topic }) => {
+      return cached(
+        "get_betterdb_info",
+        { topic },
+        async () => {
+          const docs = await getBetterDbInfo(topic);
+          if (docs.length === 0) {
+            return {
+              found: false,
+              topic,
+              message: "No matching BetterDB topic found in the indexed documentation.",
+            };
+          }
+          return {
+            found: true,
+            topic,
+            results: docs.map(projectDoc),
+          };
+        },
+        { costEstimateUsd: vectorSearchCost(topic) },
+      );
+    },
+  }),
 };
 
 function projectDoc(r: DocResult) {
@@ -235,7 +279,7 @@ function projectDoc(r: DocResult) {
   };
 }
 
-function makeComparePart(name: string, src: DocSource, doc: DocResult | null) {
+function makeComparePart(name: string, src: CommandSource, doc: DocResult | null) {
   return {
     name: name.toUpperCase(),
     source: src,

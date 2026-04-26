@@ -2,7 +2,7 @@
   "name": "betterdb-playground-chat",
   "version": "0.1.0",
   "private": true,
-  "description": "Open-source chat playground demonstrating @betterdb/agent-cache + @betterdb/semantic-cache against Valkey & Redis OSS docs.",
+  "description": "Open-source chat playground demonstrating @betterdb/agent-cache + @betterdb/semantic-cache against Valkey, Redis OSS, Dragonfly, and BetterDB docs.",
   "license": "MIT",
   "engines": {
     "node": ">=22 <23"
@@ -19,7 +19,9 @@
     "test:watch": "vitest",
     "ingest:valkey": "tsx --env-file=.env scripts/ingest-valkey-docs.ts",
     "ingest:redis": "tsx --env-file=.env scripts/ingest-redis-commands.ts",
-    "ingest": "pnpm ingest:valkey && pnpm ingest:redis",
+    "ingest:dragonfly": "tsx --env-file=.env scripts/ingest-dragonfly-docs.ts",
+    "ingest:betterdb": "tsx --env-file=.env scripts/ingest-betterdb-docs.ts",
+    "ingest": "pnpm ingest:valkey && pnpm ingest:redis && pnpm ingest:dragonfly && pnpm ingest:betterdb",
     "build:index": "tsx --env-file=.env scripts/build-index.ts",
     "seed": "tsx --env-file=.env scripts/seed-cache.ts",
     "tail:logs": "tsx --env-file=.env scripts/tail-logs.ts"

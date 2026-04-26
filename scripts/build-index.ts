@@ -96,15 +96,21 @@ async function waitForBackfill(client: Valkey): Promise<void> {
 async function main() {
   const env = validateEnv();
 
+  // Index every JSONL the user has produced. Missing files just get
+  // skipped - run only the ingest scripts you care about.
   const files = [
     path.join(process.cwd(), "data", "valkey-docs.jsonl"),
     path.join(process.cwd(), "data", "redis-docs.jsonl"),
+    path.join(process.cwd(), "data", "dragonfly-docs.jsonl"),
+    path.join(process.cwd(), "data", "betterdb-docs.jsonl"),
   ].filter(fs.existsSync);
 
   if (!files.length) {
     console.error("No JSONL files found. Run ingest scripts first.");
     process.exit(1);
   }
+  console.log(`Indexing ${files.length} source(s):`);
+  for (const f of files) console.log(`  - ${path.basename(f)}`);
 
   const docs: Doc[] = [];
   for (const f of files) {

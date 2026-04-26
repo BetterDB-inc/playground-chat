@@ -3,8 +3,8 @@
 [![CI](https://github.com/betterdb/playground-chat/actions/workflows/ci.yml/badge.svg)](./.github/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-Open-source RAG chatbot grounded in **Valkey** and **Redis OSS** documentation.
-Built as a runnable example of how
+Open-source RAG chatbot grounded in **Valkey**, **Redis OSS**, **Dragonfly**,
+and **BetterDB** documentation. Built as a runnable example of how
 [`@betterdb/agent-cache`](https://www.npmjs.com/package/@betterdb/agent-cache)
 (tool-result + LLM response caching) and
 [`@betterdb/semantic-cache`](https://www.npmjs.com/package/@betterdb/semantic-cache)
@@ -14,8 +14,8 @@ turn.
 
 ```
 ┌──────────────────────────────────────────┬──────────────────────────┐
-│  BetterDB Playground                     │  Cache Metrics           │
-│  Valkey & Redis OSS docs · RAG demo      │                          │
+│  RESP-compatible DBs and BetterDB        │  Cache Metrics           │
+│  Valkey · Redis · Dragonfly · BetterDB   │                          │
 │                                          │  All-time                │
 │  [User] What is XADD?                    │  ┌──────┬──────┬──────┐ │
 │  [Bot]  XADD appends entries to a        │  │14,2k │$42.2 │ 71%  │ │
@@ -66,9 +66,11 @@ pnpm install
 cp .env.example .env
 # fill in OPENAI_API_KEY at minimum
 
-# 4. One-time: build the doc index
-pnpm ingest          # crawls valkey.io + redis.io (polite, ~1 min)
-pnpm build:index     # embeds + upserts into valkey-search
+# 4. One-time: build the doc index from the four upstream sources
+pnpm ingest          # crawls valkey.io + redis.io + dragonflydb.io + docs.betterdb.com
+                     # (polite, ~3-5 min total). You can also run any subset:
+                     # pnpm ingest:valkey | ingest:redis | ingest:dragonfly | ingest:betterdb
+pnpm build:index     # embeds + upserts into valkey-search (whichever JSONLs exist)
 pnpm seed            # pre-warm the semantic cache from data/faq.jsonl
 
 # 5. Run
@@ -201,20 +203,22 @@ Detail:
 
 ## Scripts
 
-| Script                   | What it does                                                |
-| ------------------------ | ----------------------------------------------------------- |
-| `pnpm dev`               | Next.js dev server on `:3000`                               |
-| `pnpm build`             | Production build                                            |
-| `pnpm typecheck`         | `tsc --noEmit` with strict + `noUncheckedIndexedAccess`     |
-| `pnpm lint`              | `next lint`                                                 |
-| `pnpm format` / `:check` | Prettier write / verify                                     |
-| `pnpm test`              | Vitest unit tests                                           |
-| `pnpm ingest:valkey`     | Crawl `valkey.io/commands` + `/topics` → JSONL              |
-| `pnpm ingest:redis`      | Crawl `redis.io/docs/latest/commands` → JSONL               |
-| `pnpm ingest`            | Both above, sequentially (polite pacing)                    |
-| `pnpm build:index`       | Embed JSONL docs + upsert into `valkey-search` (`docs_idx`) |
-| `pnpm seed`              | Pre-warm semantic cache from `data/faq.jsonl`               |
-| `pnpm tail:logs`         | Pretty-print last 100 entries from the request log stream   |
+| Script                   | What it does                                              |
+| ------------------------ | --------------------------------------------------------- |
+| `pnpm dev`               | Next.js dev server on `:3000`                             |
+| `pnpm build`             | Production build                                          |
+| `pnpm typecheck`         | `tsc --noEmit` with strict + `noUncheckedIndexedAccess`   |
+| `pnpm lint`              | `next lint`                                               |
+| `pnpm format` / `:check` | Prettier write / verify                                   |
+| `pnpm test`              | Vitest unit tests                                         |
+| `pnpm ingest:valkey`     | Crawl `valkey.io/commands` + `/topics` → JSONL            |
+| `pnpm ingest:redis`      | Crawl `redis.io/docs/latest/commands` → JSONL             |
+| `pnpm ingest:dragonfly`  | Crawl `dragonflydb.io/docs` via sitemap → JSONL           |
+| `pnpm ingest:betterdb`   | Crawl `docs.betterdb.com` via BFS from home → JSONL       |
+| `pnpm ingest`            | All four above, sequentially (polite pacing)              |
+| `pnpm build:index`       | Embed any/all JSONLs + upsert into `valkey-search`        |
+| `pnpm seed`              | Pre-warm semantic cache from `data/faq.jsonl`             |
+| `pnpm tail:logs`         | Pretty-print last 100 entries from the request log stream |
 
 ## Contributing
 

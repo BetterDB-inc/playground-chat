@@ -188,3 +188,39 @@ export async function politeFetchHtml(url: string, opts: FetchOpts = {}): Promis
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
   return res.text();
 }
+
+/**
+ * Recursively expand a sitemap (or sitemap-index) URL into a flat list of
+ * page URLs. Handles the common nested case where /sitemap.xml is an index
+ * pointing at /sitemap-0.xml, /docs/sitemap.xml etc.
+ *
+ * Naive XML extraction via regex - good enough for standard sitemap.xml
+ * shapes. If the upstream uses a non-standard schema, swap in a real XML
+ * parser.
+ */
+export async function fetchSitemap(url: string): Promise<string[]> {
+  const xml = await politeFetchHtml(url);
+  const entries: string[] = [];
+  // <loc>https://...</loc> appears in both <sitemap> and <url> elements.
+  const re = /<loc>([^<]+)<\/loc>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    const loc = m[1]?.trim();
+    if (loc) entries.push(loc);
+  }
+  // If this looks like a sitemap-index (entries point at other XMLs), recurse.
+  const isIndex = /<sitemapindex/i.test(xml);
+  if (isIndex) {
+    const all: string[] = [];
+    for (const child of entries) {
+      try {
+        const children = await fetchSitemap(child);
+        all.push(...children);
+      } catch (e) {
+        console.warn(`  sitemap fetch failed for ${child}:`, e instanceof Error ? e.message : e);
+      }
+    }
+    return all;
+  }
+  return entries;
+}

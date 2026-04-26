@@ -66,6 +66,8 @@ deploy/
 # =============================================================================
 data/valkey-docs.jsonl
 data/redis-docs.jsonl
+data/dragonfly-docs.jsonl
+data/betterdb-docs.jsonl
 
 # =============================================================================
 #  Vitest cache
