@@ -131,14 +131,14 @@ export function Chat({ onTurnComplete }: Props) {
 
       {/* Messages */}
       <div
-        className="flex-1 overflow-y-auto px-4 py-6 space-y-4"
+        className="flex-1 overflow-y-auto px-4 py-3 sm:py-6 space-y-4"
         aria-live="polite"
         aria-busy={isLoading}
       >
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-8 text-center">
+          <div className="flex flex-col items-center justify-center min-h-full gap-4 sm:gap-8 text-center">
             <div className="space-y-2 max-w-md">
-              <h2 className="text-2xl font-semibold text-foreground tracking-tight">
+              <h2 className="text-xl sm:text-2xl font-semibold text-foreground tracking-tight">
                 Ask about Valkey, Redis, Dragonfly, or BetterDB
               </h2>
               <p className="text-muted-foreground text-sm">
@@ -205,7 +205,7 @@ export function Chat({ onTurnComplete }: Props) {
       </div>
 
       {/* Input */}
-      <div className="px-4 py-4 border-t border-border">
+      <div className="px-4 py-3 sm:py-4 border-t border-border">
         <form id="chat-form" onSubmit={handleSubmit} className="flex gap-2 items-center">
           <label htmlFor="chat-input" className="sr-only">
             Ask a question

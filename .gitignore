@@ -78,3 +78,4 @@ data/betterdb-docs.jsonl
 #  Claude Code worktrees + plans (local agent harness state)
 # =============================================================================
 .claude/
+.vercel

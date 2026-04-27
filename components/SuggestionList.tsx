@@ -32,7 +32,7 @@ export function SuggestionList({ onPick, variant, disabled }: Props) {
             type="button"
             disabled={disabled}
             onClick={() => onPick(s)}
-            className="text-left px-4 py-2.5 rounded-lg border border-border bg-card
+            className="text-left px-4 py-2 sm:py-2.5 rounded-lg border border-border bg-card
                        text-card-foreground text-sm
                        hover:border-primary/50 hover:bg-accent
                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40
