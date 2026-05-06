@@ -99,8 +99,8 @@ async function monitorFetch(
     let msg = `Monitor API ${method} ${path} → ${res.status}`;
     try {
       const parsed = JSON.parse(text) as { message?: string; error?: string };
-      if (parsed.message) msg = parsed.message;
-      else if (parsed.error) msg = parsed.error;
+      const detail = parsed.message ?? parsed.error;
+      if (detail) msg = `${msg}: ${detail}`;
     } catch { /* use default */ }
     throw new Error(msg);
   }

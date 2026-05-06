@@ -222,7 +222,10 @@ const cacheTools = {
 
 // ---- route ------------------------------------------------------------------
 
-export async function POST(req: Request) {
+// Shared handler — extracted so both GET (Vercel Cron) and POST (manual curl)
+// can run the same optimization cycle. Vercel Cron always sends GET requests;
+// POST is kept for manual triggering via Authorization: Bearer <CRON_SECRET>.
+async function runOptimizationCycle(req: Request): Promise<Response> {
   // Authenticate — CRON_SECRET is required. Vercel injects it automatically
   // and sends it as x-vercel-cron-secret on cron calls. Manual callers pass
   // it as Authorization: Bearer <secret>. Refusing when unset prevents an
@@ -303,9 +306,9 @@ export async function POST(req: Request) {
   }
 }
 
-export async function GET() {
-  return Response.json(
-    { error: "Method not allowed. POST to trigger the optimization cycle." },
-    { status: 405 },
-  );
-}
+// GET — Vercel Cron always invokes endpoints via GET.
+export const GET = (req: Request) => runOptimizationCycle(req);
+
+// POST — manual triggers: curl -X POST ... -H "Authorization: Bearer $CRON_SECRET"
+export const POST = (req: Request) => runOptimizationCycle(req);
+
