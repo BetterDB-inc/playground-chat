@@ -218,19 +218,6 @@ const cacheTools = {
       ),
   }),
 
-  reject_proposal: tool({
-    description: "Reject a pending proposal with an optional reason.",
-    inputSchema: z.object({
-      proposal_id: z.string(),
-      reason: z.string().optional(),
-    }),
-    execute: async ({ proposal_id, reason }) =>
-      // Same global routing as approve_proposal — no instance prefix needed.
-      monitorPost(
-        `/mcp/cache-proposals/${encodeURIComponent(proposal_id)}/reject`,
-        { actor: "optimize-agent", reason: reason ?? null },
-      ),
-  }),
 };
 
 // ---- route ------------------------------------------------------------------
@@ -266,12 +253,21 @@ export async function POST(req: Request) {
     );
   }
 
-  const optimizeModel = process.env.OPTIMIZE_MODEL ?? "gpt-4o-mini";
-  const knownModels = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o3-mini"];
-  if (!knownModels.includes(optimizeModel)) {
-    console.warn(`[optimize] OPTIMIZE_MODEL="${optimizeModel}" is not a recognised model — typos will cause a runtime API error`);
+  // Pre-flight: validate BetterDB vars before spending an LLM call.
+  // These are checked lazily inside tool execute() functions, but failing
+  // there wastes tokens on the first tool invocation.
+  if (
+    !process.env.BETTERDB_URL ||
+    !process.env.BETTERDB_TOKEN ||
+    !process.env.BETTERDB_INSTANCE_ID
+  ) {
+    return Response.json(
+      { error: "BETTERDB_URL, BETTERDB_TOKEN, and BETTERDB_INSTANCE_ID must all be set" },
+      { status: 500 },
+    );
   }
 
+  const optimizeModel = process.env.OPTIMIZE_MODEL ?? "gpt-4o-mini";
   const openai = createOpenAI({ apiKey: env.openaiKey });
   const abortController = new AbortController();
   const agentTimer = setTimeout(() => abortController.abort(), AGENT_TIMEOUT_MS);

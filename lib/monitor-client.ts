@@ -88,7 +88,10 @@ async function monitorFetch(
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(10_000),
+    // 5s cap: the route's AbortController fires at 45s and doesn't propagate
+    // into tool fetches. Keeping this low ensures in-flight fetches complete
+    // well within the 55s maxDuration even if they start near the deadline.
+    signal: AbortSignal.timeout(5_000),
   });
 
   if (!res.ok) {
