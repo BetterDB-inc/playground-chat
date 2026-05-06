@@ -114,7 +114,10 @@ export async function POST(req: Request) {
   const semanticStart = Date.now();
   let semanticHit: SemanticHit;
   try {
-    semanticHit = await semanticCache.check(lastUserText);
+    semanticHit = await semanticCache.check(lastUserText, {
+      staleAfterModelChange: true,
+      currentModel: env.llmModel,
+    });
   } catch (e) {
     console.warn("semantic cache check failed:", e);
     semanticHit = semanticMiss;

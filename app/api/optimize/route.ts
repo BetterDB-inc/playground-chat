@@ -1,0 +1,274 @@
+/**
+ * Cache self-optimization agent.
+ *
+ * Triggered by Vercel Cron (see vercel.json) or manually via:
+ *   curl -X POST /api/optimize -H "Authorization: Bearer $CRON_SECRET"
+ *
+ * Uses GPT (via @ai-sdk/openai + generateText) to:
+ *   1. List all caches registered on the configured Valkey instance.
+ *   2. Fetch health, threshold recommendations, and tool effectiveness.
+ *   3. Propose threshold / TTL adjustments where the data clearly warrants it.
+ *   4. Auto-approve the proposals it creates.
+ *
+ * Required env vars (in addition to existing ones):
+ *   BETTERDB_URL          Monitor base URL
+ *   BETTERDB_TOKEN        MCP bearer token
+ *   BETTERDB_INSTANCE_ID  Valkey connection ID in Monitor
+ *   CRON_SECRET           Shared secret to authenticate cron + manual calls
+ *
+ * Optional:
+ *   OPTIMIZE_MODEL        OpenAI model to use (default: gpt-4o-mini)
+ */
+
+import { generateText, tool, stepCountIs } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
+import { z } from "zod";
+import { monitorGet, monitorPost, requireInstanceId } from "@/lib/monitor-client";
+import { validateEnv } from "@/lib/env";
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
+const SYSTEM_PROMPT = `\
+You are a cache optimization agent for a production LLM application backed by Valkey.
+You have access to a BetterDB Monitor instance that tracks two caches:
+  - playground_scache  (semantic_cache  — full LLM response cache, cosine-distance threshold)
+  - playground         (agent_cache     — exact-match tool-result and LLM-call cache)
+
+Your job each run:
+
+1. Call list_caches to see what is registered and live.
+2. For every semantic_cache: call cache_health then threshold_recommendation.
+   - If recommendation is "tighten_threshold" or "loosen_threshold" AND sample_count >= 100:
+     * First call recent_changes to confirm no pending threshold proposal already exists.
+     * If clear, call propose_threshold_adjust then immediately call approve_proposal.
+   - If "optimal" or "insufficient_data": log why and skip.
+3. For every agent_cache: call cache_health then tool_effectiveness.
+   - For each tool with recommendation "increase_ttl" or "decrease_ttl_or_disable" AND
+     at least 20 total ops (hits + misses):
+     * First call recent_changes to confirm no pending TTL proposal for that tool.
+     * If clear, call propose_tool_ttl_adjust then immediately call approve_proposal.
+       * increase_ttl         → double current TTL (cap at 86400 s)
+       * decrease_ttl_or_disable → halve current TTL (floor at 60 s);
+                                   if hit_rate < 0.05 propose 60 s
+4. When calling approve_proposal, always set actor to "optimize-agent".
+5. After all actions, output a concise plain-text summary of what you did and why.
+
+Rules:
+- Never propose a threshold outside [0.02, 0.30].
+- Never propose a TTL below 60 s or above 86400 s.
+- reasoning fields must be >= 20 characters and reference actual metric values.
+- If BETTERDB_URL / BETTERDB_TOKEN / BETTERDB_INSTANCE_ID are not configured, stop.
+- Be conservative: skip when data is ambiguous or sample_count is too low.
+`;
+
+// ---- tool definitions -------------------------------------------------------
+
+function instancePath(suffix: string): string {
+  const id = requireInstanceId();
+  return `/mcp/instance/${id}${suffix}`;
+}
+
+const cacheTools = {
+  list_caches: tool({
+    description: "List all caches registered on the active Valkey instance.",
+    inputSchema: z.object({}),
+    execute: async () => monitorGet(instancePath("/caches")),
+  }),
+
+  cache_health: tool({
+    description:
+      "Detailed health for a single cache (hit rate, cost saved, warnings, " +
+      "per-tool breakdown for agent_cache, uncertain_hit_rate for semantic_cache).",
+    inputSchema: z.object({
+      cache_name: z.string().describe("Cache name as shown by list_caches"),
+    }),
+    execute: async ({ cache_name }) =>
+      monitorGet(instancePath(`/caches/${encodeURIComponent(cache_name)}/health`)),
+  }),
+
+  threshold_recommendation: tool({
+    description:
+      "Threshold-tuning recommendation for a semantic_cache based on the rolling " +
+      "similarity-score window. Returns recommendation, sample_count, and recommended_threshold.",
+    inputSchema: z.object({
+      cache_name: z.string(),
+      category: z
+        .string()
+        .optional()
+        .describe("Omit for the global threshold"),
+      min_samples: z.number().int().optional().describe("Default 100"),
+    }),
+    execute: async ({ cache_name, category, min_samples }) => {
+      const qs = new URLSearchParams();
+      if (category) qs.set("category", category);
+      if (min_samples !== undefined) qs.set("minSamples", String(min_samples));
+      const q = qs.size ? `?${qs}` : "";
+      return monitorGet(
+        instancePath(
+          `/caches/${encodeURIComponent(cache_name)}/threshold-recommendation${q}`,
+        ),
+      );
+    },
+  }),
+
+  tool_effectiveness: tool({
+    description:
+      "Per-tool hit_rate, cost_saved_usd, ttl_current, and recommendation " +
+      "for an agent_cache. Returns an array sorted by cost_saved_usd desc.",
+    inputSchema: z.object({ cache_name: z.string() }),
+    execute: async ({ cache_name }) =>
+      monitorGet(
+        instancePath(
+          `/caches/${encodeURIComponent(cache_name)}/tool-effectiveness`,
+        ),
+      ),
+  }),
+
+  recent_changes: tool({
+    description:
+      "Recent proposals for a cache (any status, newest first). " +
+      "Call this before proposing to avoid creating duplicates.",
+    inputSchema: z.object({
+      cache_name: z.string(),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Default 20"),
+    }),
+    execute: async ({ cache_name, limit }) => {
+      const q = limit !== undefined ? `?limit=${limit}` : "";
+      return monitorGet(
+        instancePath(
+          `/caches/${encodeURIComponent(cache_name)}/recent-changes${q}`,
+        ),
+      );
+    },
+  }),
+
+  propose_threshold_adjust: tool({
+    description:
+      "Propose a similarity-threshold change for a semantic_cache. " +
+      "Returns a proposal_id — pass it to approve_proposal immediately.",
+    inputSchema: z.object({
+      cache_name: z.string(),
+      new_threshold: z.number().min(0.02).max(0.3),
+      reasoning: z.string().min(20),
+      category: z.string().nullable().optional(),
+    }),
+    execute: async ({ cache_name, new_threshold, reasoning, category }) =>
+      monitorPost(instancePath("/cache-proposals/threshold-adjust"), {
+        cache_name,
+        new_threshold,
+        reasoning,
+        category: category ?? null,
+      }),
+  }),
+
+  propose_tool_ttl_adjust: tool({
+    description:
+      "Propose a per-tool TTL change for an agent_cache. " +
+      "Returns a proposal_id — pass it to approve_proposal immediately.",
+    inputSchema: z.object({
+      cache_name: z.string(),
+      tool_name: z.string(),
+      new_ttl_seconds: z.number().int().min(60).max(86400),
+      reasoning: z.string().min(20),
+    }),
+    execute: async ({ cache_name, tool_name, new_ttl_seconds, reasoning }) =>
+      monitorPost(instancePath("/cache-proposals/tool-ttl-adjust"), {
+        cache_name,
+        tool_name,
+        new_ttl_seconds,
+        reasoning,
+      }),
+  }),
+
+  approve_proposal: tool({
+    description:
+      "Approve a pending proposal. Synchronously writes the change to Valkey " +
+      "and returns terminal status (applied | failed).",
+    inputSchema: z.object({
+      proposal_id: z.string(),
+    }),
+    execute: async ({ proposal_id }) =>
+      monitorPost(
+        `/mcp/cache-proposals/${encodeURIComponent(proposal_id)}/approve`,
+        { actor: "optimize-agent" },
+      ),
+  }),
+
+  reject_proposal: tool({
+    description: "Reject a pending proposal with an optional reason.",
+    inputSchema: z.object({
+      proposal_id: z.string(),
+      reason: z.string().optional(),
+    }),
+    execute: async ({ proposal_id, reason }) =>
+      monitorPost(
+        `/mcp/cache-proposals/${encodeURIComponent(proposal_id)}/reject`,
+        { actor: "optimize-agent", reason: reason ?? null },
+      ),
+  }),
+};
+
+// ---- route ------------------------------------------------------------------
+
+export async function POST(req: Request) {
+  // Authenticate — Vercel Cron sends x-vercel-cron-secret automatically;
+  // manual callers pass Authorization: Bearer <CRON_SECRET>.
+  const cronSecret = process.env.CRON_SECRET ?? "";
+  if (cronSecret) {
+    const auth =
+      req.headers.get("x-vercel-cron-secret") ??
+      req.headers.get("authorization") ??
+      "";
+    const provided = auth.startsWith("Bearer ") ? auth.slice(7) : auth;
+    if (provided !== cronSecret) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+  }
+
+  let env: ReturnType<typeof validateEnv>;
+  try {
+    env = validateEnv();
+  } catch (e) {
+    return Response.json(
+      { error: e instanceof Error ? e.message : "Env validation failed" },
+      { status: 500 },
+    );
+  }
+
+  const optimizeModel = process.env.OPTIMIZE_MODEL ?? "gpt-4o-mini";
+  const openai = createOpenAI({ apiKey: env.openaiKey });
+
+  try {
+    const { text, steps } = await generateText({
+      model: openai(optimizeModel),
+      system: SYSTEM_PROMPT,
+      prompt: "Run the cache optimization cycle now.",
+      tools: cacheTools,
+      stopWhen: stepCountIs(30),
+    });
+
+    const toolCallCount = steps.reduce(
+      (n, s) => n + (s.toolCalls?.length ?? 0),
+      0,
+    );
+
+    console.log(
+      `[optimize] done — ${toolCallCount} tool calls, model=${optimizeModel}`,
+    );
+
+    return Response.json({ ok: true, summary: text, toolCallCount });
+  } catch (e) {
+    console.error("[optimize] agent error:", e);
+    return Response.json(
+      { error: e instanceof Error ? e.message : "Agent failed" },
+      { status: 500 },
+    );
+  }
+}
