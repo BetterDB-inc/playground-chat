@@ -20,6 +20,7 @@
  *   OPTIMIZE_MODEL        OpenAI model to use (default: gpt-4o-mini)
  */
 
+import { timingSafeEqual } from "crypto";
 import { generateText, tool, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
@@ -27,7 +28,20 @@ import { monitorGet, monitorPost, requireInstanceId } from "@/lib/monitor-client
 import { validateEnv } from "@/lib/env";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 55; // leave headroom vs the 60s Vercel limit
+
+// Budget: 20 steps × 10s max per tool call = 200s worst case, but the
+// AbortSignal on generateText caps the whole run at 45s.
+const AGENT_TIMEOUT_MS = 45_000;
+
+function constantTimeEqual(a: string, b: string): boolean {
+  try {
+    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    // timingSafeEqual throws if lengths differ — that itself is a mismatch.
+    return false;
+  }
+}
 
 const SYSTEM_PROMPT = `\
 You are a cache optimization agent for a production LLM application backed by Valkey.
@@ -194,6 +208,10 @@ const cacheTools = {
       proposal_id: z.string(),
     }),
     execute: async ({ proposal_id }) =>
+      // Approval is intentionally NOT instance-scoped — proposal IDs are
+      // globally unique UUIDs and the Monitor routes them without an instance
+      // prefix. Verified against CacheProposalMcpController:
+      //   @Post('cache-proposals/:proposalId/approve')  (no instance segment)
       monitorPost(
         `/mcp/cache-proposals/${encodeURIComponent(proposal_id)}/approve`,
         { actor: "optimize-agent" },
@@ -207,6 +225,7 @@ const cacheTools = {
       reason: z.string().optional(),
     }),
     execute: async ({ proposal_id, reason }) =>
+      // Same global routing as approve_proposal — no instance prefix needed.
       monitorPost(
         `/mcp/cache-proposals/${encodeURIComponent(proposal_id)}/reject`,
         { actor: "optimize-agent", reason: reason ?? null },
@@ -233,7 +252,7 @@ export async function POST(req: Request) {
     req.headers.get("authorization") ??
     "";
   const provided = auth.startsWith("Bearer ") ? auth.slice(7) : auth;
-  if (provided !== cronSecret) {
+  if (!constantTimeEqual(provided, cronSecret)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -248,7 +267,14 @@ export async function POST(req: Request) {
   }
 
   const optimizeModel = process.env.OPTIMIZE_MODEL ?? "gpt-4o-mini";
+  const knownModels = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o3-mini"];
+  if (!knownModels.includes(optimizeModel)) {
+    console.warn(`[optimize] OPTIMIZE_MODEL="${optimizeModel}" is not a recognised model — typos will cause a runtime API error`);
+  }
+
   const openai = createOpenAI({ apiKey: env.openaiKey });
+  const abortController = new AbortController();
+  const agentTimer = setTimeout(() => abortController.abort(), AGENT_TIMEOUT_MS);
 
   try {
     const { text, steps } = await generateText({
@@ -256,7 +282,8 @@ export async function POST(req: Request) {
       system: SYSTEM_PROMPT,
       prompt: "Run the cache optimization cycle now.",
       tools: cacheTools,
-      stopWhen: stepCountIs(30),
+      stopWhen: stepCountIs(20),
+      abortSignal: abortController.signal,
     });
 
     const toolCallCount = steps.reduce(
@@ -275,5 +302,14 @@ export async function POST(req: Request) {
       { error: e instanceof Error ? e.message : "Agent failed" },
       { status: 500 },
     );
+  } finally {
+    clearTimeout(agentTimer);
   }
+}
+
+export async function GET() {
+  return Response.json(
+    { error: "Method not allowed. POST to trigger the optimization cycle." },
+    { status: 405 },
+  );
 }

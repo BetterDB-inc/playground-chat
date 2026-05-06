@@ -9,38 +9,62 @@
  *   BETTERDB_INSTANCE_ID  Connection ID of the Valkey instance to optimize
  */
 
-const RAW_URL = process.env.BETTERDB_URL ?? "";
-const TOKEN = process.env.BETTERDB_TOKEN ?? "";
-
 // Auto-detect whether Monitor is behind /api (deployed) or / (local dev).
-// A Promise sentinel serialises concurrent cold-start callers so only one
-// probe runs at a time. On failure the sentinel is reset to null so the
-// next request gets a fresh attempt instead of inheriting a stale wrong prefix.
-let prefixPromise: Promise<"/api" | ""> | null = null;
+//
+// Design:
+// - Env vars are read inside functions (not at module scope) so tests and
+//   runtime env changes take effect without a module reload.
+// - A separate in-flight promise (prefixInFlight) serialises concurrent
+//   cold-start callers so only one probe runs at a time.
+// - A TTL-based cache (PREFIX_TTL_MS) ensures the prefix is re-probed
+//   periodically so a Monitor path change takes effect eventually without
+//   needing a process restart.
+// - 404s from legitimate "resource not found" responses are NOT used to
+//   reset the prefix — that caused spurious re-probes on every deleted cache.
+//   The TTL handles stale prefixes instead.
 
-function resolvePrefix(): Promise<"/api" | ""> {
-  if (!prefixPromise) {
-    prefixPromise = (async (): Promise<"/api" | ""> => {
-      for (const prefix of ["/api", ""] as const) {
-        try {
-          const res = await fetch(`${RAW_URL}${prefix}/mcp/instances`, {
-            headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
-            signal: AbortSignal.timeout(5_000),
-          });
-          if (res.ok) return prefix;
-        } catch {
-          // try next prefix
-        }
-      }
-      throw new Error(
-        "BetterDB Monitor not reachable — check BETTERDB_URL and BETTERDB_TOKEN",
-      );
-    })().catch((err: unknown) => {
-      prefixPromise = null; // reset so next call retries rather than re-using a bad result
-      throw err;
-    });
+const PREFIX_TTL_MS = 5 * 60 * 1000; // re-probe every 5 minutes
+
+let prefixCache: { value: "/api" | ""; resolvedAt: number } | null = null;
+let prefixInFlight: Promise<"/api" | ""> | null = null;
+
+async function detectPrefix(url: string, token: string): Promise<"/api" | ""> {
+  for (const prefix of ["/api", ""] as const) {
+    try {
+      const res = await fetch(`${url}${prefix}/mcp/instances`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (res.ok) return prefix;
+    } catch {
+      // try next prefix
+    }
   }
-  return prefixPromise;
+  throw new Error(
+    "BetterDB Monitor not reachable — check BETTERDB_URL and BETTERDB_TOKEN",
+  );
+}
+
+function resolvePrefix(url: string, token: string): Promise<"/api" | ""> {
+  // Invalidate expired cache so a Monitor path change takes effect eventually.
+  if (prefixCache && Date.now() - prefixCache.resolvedAt > PREFIX_TTL_MS) {
+    prefixCache = null;
+  }
+  if (prefixCache) return Promise.resolve(prefixCache.value);
+
+  if (!prefixInFlight) {
+    prefixInFlight = detectPrefix(url, token)
+      .then((value) => {
+        prefixCache = { value, resolvedAt: Date.now() };
+        prefixInFlight = null;
+        return value;
+      })
+      .catch((err: unknown) => {
+        prefixInFlight = null; // allow retry on next call
+        throw err;
+      });
+  }
+  return prefixInFlight;
 }
 
 async function monitorFetch(
@@ -48,28 +72,24 @@ async function monitorFetch(
   path: string,
   body?: unknown,
 ): Promise<unknown> {
-  if (!RAW_URL) throw new Error("BETTERDB_URL is not set");
-  if (!TOKEN) throw new Error("BETTERDB_TOKEN is not set");
+  // Read env vars here (not at module scope) so tests and runtime changes work.
+  const url = (process.env.BETTERDB_URL ?? "").replace(/\/+$/, "");
+  const token = process.env.BETTERDB_TOKEN ?? "";
 
-  const prefix = await resolvePrefix();
-  const url = `${RAW_URL}${prefix}${path}`;
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${TOKEN}`,
-  };
+  if (!url) throw new Error("BETTERDB_URL is not set");
+  if (!token) throw new Error("BETTERDB_TOKEN is not set");
+
+  const prefix = await resolvePrefix(url, token);
+  const fullUrl = `${url}${prefix}${path}`;
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
-  const res = await fetch(url, {
+  const res = await fetch(fullUrl, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(10_000),
   });
-
-  // A 404 on an actual API call most likely means we cached the wrong prefix
-  // (e.g. Monitor moved between /api and /). Reset so the next call re-probes.
-  if (res.status === 404) {
-    prefixPromise = null;
-  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
