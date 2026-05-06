@@ -264,6 +264,7 @@ async function runOptimizationCycle(req: Request): Promise<Response> {
     !process.env.BETTERDB_TOKEN ||
     !process.env.BETTERDB_INSTANCE_ID
   ) {
+    console.error("[optimize] pre-flight failed: BETTERDB_URL, BETTERDB_TOKEN, and BETTERDB_INSTANCE_ID must all be set");
     return Response.json(
       { error: "BETTERDB_URL, BETTERDB_TOKEN, and BETTERDB_INSTANCE_ID must all be set" },
       { status: 500 },
@@ -271,6 +272,11 @@ async function runOptimizationCycle(req: Request): Promise<Response> {
   }
 
   const optimizeModel = process.env.OPTIMIZE_MODEL ?? "gpt-4o-mini";
+  const method = req.method;
+  const runStart = Date.now();
+
+  console.log(`[optimize] run started — method=${method} model=${optimizeModel} instance=${process.env.BETTERDB_INSTANCE_ID}`);
+
   const openai = createOpenAI({ apiKey: env.openaiKey });
   const abortController = new AbortController();
   const agentTimer = setTimeout(() => abortController.abort(), AGENT_TIMEOUT_MS);
@@ -283,20 +289,36 @@ async function runOptimizationCycle(req: Request): Promise<Response> {
       tools: cacheTools,
       stopWhen: stepCountIs(20),
       abortSignal: abortController.signal,
+      onStepFinish: ({ toolCalls, toolResults, finishReason }) => {
+        for (const call of toolCalls) {
+          const result = toolResults.find((r) => r.toolCallId === call.toolCallId);
+          const inputPreview = JSON.stringify(call.input).slice(0, 120);
+          const outputPreview = result
+            ? JSON.stringify(result.output).slice(0, 120)
+            : "—";
+          console.log(
+            `[optimize] tool=${call.toolName} input=${inputPreview} → ${outputPreview}`,
+          );
+        }
+        if (finishReason !== "tool-calls") {
+          console.log(`[optimize] step finished — finishReason=${finishReason}`);
+        }
+      },
     });
 
     const toolCallCount = steps.reduce(
       (n, s) => n + (s.toolCalls?.length ?? 0),
       0,
     );
+    const durationMs = Date.now() - runStart;
 
-    console.log(
-      `[optimize] done — ${toolCallCount} tool calls, model=${optimizeModel}`,
-    );
+    console.log(`[optimize] run complete — toolCalls=${toolCallCount} duration=${durationMs}ms`);
+    console.log(`[optimize] summary: ${text.slice(0, 500)}${text.length > 500 ? "…" : ""}`);
 
-    return Response.json({ ok: true, summary: text, toolCallCount });
+    return Response.json({ ok: true, summary: text, toolCallCount, durationMs });
   } catch (e) {
-    console.error("[optimize] agent error:", e);
+    const durationMs = Date.now() - runStart;
+    console.error(`[optimize] run failed after ${durationMs}ms:`, e instanceof Error ? e.message : e);
     return Response.json(
       { error: e instanceof Error ? e.message : "Agent failed" },
       { status: 500 },
