@@ -19,6 +19,9 @@ export const agentCache = new AgentCache({
     llm: { ttl: Number(process.env.LLM_TTL_SECONDS ?? process.env.TOOL_TTL_SECONDS ?? 86400) },
   },
   costTable: LLM_COST_TABLE,
+  // Re-read tool policies from Valkey every 30s so Monitor can apply cache
+  // proposals (TTL / disable) without a process restart.
+  configRefresh: { enabled: true, intervalMs: 30_000 },
 });
 
 /**
@@ -33,6 +36,9 @@ export const semanticCache = new SemanticCache({
   defaultThreshold: Number(process.env.SEMANTIC_THRESHOLD ?? 0.08),
   defaultTtl: Number(process.env.SEMANTIC_TTL_SECONDS ?? 604800),
   costTable: LLM_COST_TABLE,
+  // Re-read threshold config from Valkey every 30s so Monitor can tune the
+  // similarity threshold live without a process restart.
+  configRefresh: { enabled: true, intervalMs: 30_000 },
 });
 
 /**

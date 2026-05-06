@@ -15,11 +15,11 @@ importers:
         specifier: ^3.0.170
         version: 3.0.170(react@19.1.0)(zod@3.25.76)
       '@betterdb/agent-cache':
-        specifier: ^0.2.0
-        version: 0.2.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
+        specifier: ^0.6.0
+        version: 0.6.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
       '@betterdb/semantic-cache':
-        specifier: ^0.2.0
-        version: 0.2.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
+        specifier: ^0.4.0
+        version: 0.4.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
       '@vercel/analytics':
         specifier: ^2.0.1
         version: 2.0.1(next@16.2.4(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react@19.1.0)
@@ -193,27 +193,36 @@ packages:
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
 
-  '@betterdb/agent-cache@0.2.0':
-    resolution: {integrity: sha512-wT2i0itJ2tETXhlNsprXP5H+N+iUYCV9enUqBgyjsUGDHYysOpn8Tg1r1JzPBDd+Hu5NHRsmKHv6TdboIn5ZJQ==}
+  '@betterdb/agent-cache@0.6.0':
+    resolution: {integrity: sha512-JFzfpM2gSeOzuZXXKOH24o9ntdaBjOalj7ECdT5XasHm5He7qpjs+7fgQ2+obLrj1VuoBORkgpoSxdQtrkWeyA==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
+      '@anthropic-ai/sdk': '>=0.90.0'
       '@langchain/core': '>=0.3.0'
       '@langchain/langgraph-checkpoint': '>=0.1.0'
+      '@llamaindex/core': '>=0.6.0'
       ai: ^6.0.135
       iovalkey: '>=0.3.0'
+      openai: '>=6.0.0'
       posthog-node: '>=4.0.0'
     peerDependenciesMeta:
+      '@anthropic-ai/sdk':
+        optional: true
       '@langchain/core':
         optional: true
       '@langchain/langgraph-checkpoint':
         optional: true
+      '@llamaindex/core':
+        optional: true
       ai:
+        optional: true
+      openai:
         optional: true
       posthog-node:
         optional: true
 
-  '@betterdb/semantic-cache@0.2.0':
-    resolution: {integrity: sha512-l8UbQwslluKN21t7KhzJoVqBPB7sTNIi0th5goWfTVNA5KQwwxFIq0mtsb+NdJk788oBi0AkllRE3w09bRm0gQ==}
+  '@betterdb/semantic-cache@0.4.0':
+    resolution: {integrity: sha512-a3XlTNOwKMstDGfuEvBQ0cUX3+aUGkGHTWfX17ggnWed0eRZ6jsHRptlyKXDapa3PxNozRN2U8gZcsqq2VPmAw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@anthropic-ai/sdk': '>=0.90.0'
@@ -3327,7 +3336,7 @@ snapshots:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
 
-  '@betterdb/agent-cache@0.2.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)':
+  '@betterdb/agent-cache@0.6.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)':
     dependencies:
       '@opentelemetry/api': 1.9.0
       iovalkey: 0.3.3
@@ -3336,7 +3345,7 @@ snapshots:
       ai: 6.0.168(zod@3.25.76)
       posthog-node: 5.29.2
 
-  '@betterdb/semantic-cache@0.2.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)':
+  '@betterdb/semantic-cache@0.4.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)':
     dependencies:
       '@opentelemetry/api': 1.9.0
       iovalkey: 0.3.3
