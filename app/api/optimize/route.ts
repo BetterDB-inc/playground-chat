@@ -31,19 +31,19 @@ export const maxDuration = 60;
 
 const SYSTEM_PROMPT = `\
 You are a cache optimization agent for a production LLM application backed by Valkey.
-You have access to a BetterDB Monitor instance that tracks two caches:
-  - playground_scache  (semantic_cache  — full LLM response cache, cosine-distance threshold)
-  - playground         (agent_cache     — exact-match tool-result and LLM-call cache)
+You have access to a BetterDB Monitor instance. The caches and their types are unknown
+upfront — always discover them by calling list_caches first and use the type field
+("semantic_cache" or "agent_cache") from each entry to decide what to do next.
 
 Your job each run:
 
-1. Call list_caches to see what is registered and live.
-2. For every semantic_cache: call cache_health then threshold_recommendation.
+1. Call list_caches to discover all registered, live caches and their types.
+2. For every cache whose type is "semantic_cache": call cache_health then threshold_recommendation.
    - If recommendation is "tighten_threshold" or "loosen_threshold" AND sample_count >= 100:
      * First call recent_changes to confirm no pending threshold proposal already exists.
      * If clear, call propose_threshold_adjust then immediately call approve_proposal.
    - If "optimal" or "insufficient_data": log why and skip.
-3. For every agent_cache: call cache_health then tool_effectiveness.
+3. For every cache whose type is "agent_cache": call cache_health then tool_effectiveness.
    - For each tool with recommendation "increase_ttl" or "decrease_ttl_or_disable" AND
      at least 20 total ops (hits + misses):
      * First call recent_changes to confirm no pending TTL proposal for that tool.
@@ -51,8 +51,7 @@ Your job each run:
        * increase_ttl         → double current TTL (cap at 86400 s)
        * decrease_ttl_or_disable → halve current TTL (floor at 60 s);
                                    if hit_rate < 0.05 propose 60 s
-4. When calling approve_proposal, always set actor to "optimize-agent".
-5. After all actions, output a concise plain-text summary of what you did and why.
+4. After all actions, output a concise plain-text summary of what you did and why.
 
 Rules:
 - Never propose a threshold outside [0.02, 0.30].
@@ -218,18 +217,24 @@ const cacheTools = {
 // ---- route ------------------------------------------------------------------
 
 export async function POST(req: Request) {
-  // Authenticate — Vercel Cron sends x-vercel-cron-secret automatically;
-  // manual callers pass Authorization: Bearer <CRON_SECRET>.
+  // Authenticate — CRON_SECRET is required. Vercel injects it automatically
+  // and sends it as x-vercel-cron-secret on cron calls. Manual callers pass
+  // it as Authorization: Bearer <secret>. Refusing when unset prevents an
+  // accidental open endpoint in misconfigured deployments.
   const cronSecret = process.env.CRON_SECRET ?? "";
-  if (cronSecret) {
-    const auth =
-      req.headers.get("x-vercel-cron-secret") ??
-      req.headers.get("authorization") ??
-      "";
-    const provided = auth.startsWith("Bearer ") ? auth.slice(7) : auth;
-    if (provided !== cronSecret) {
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  if (!cronSecret) {
+    return Response.json(
+      { error: "CRON_SECRET is not configured — endpoint is disabled" },
+      { status: 401 },
+    );
+  }
+  const auth =
+    req.headers.get("x-vercel-cron-secret") ??
+    req.headers.get("authorization") ??
+    "";
+  const provided = auth.startsWith("Bearer ") ? auth.slice(7) : auth;
+  if (provided !== cronSecret) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   let env: ReturnType<typeof validateEnv>;
