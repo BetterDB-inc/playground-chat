@@ -181,10 +181,13 @@ export async function POST(req: Request) {
           const { text } = await generateText({
             model: openai(process.env.JUDGE_MODEL ?? "gpt-4o-mini"),
             system:
-              "You are a cache quality judge for a Valkey, Redis, Dragonfly, and " +
-              "BetterDB documentation chatbot. Given a user query and a cached " +
-              'response, reply with exactly "yes" if the cached response adequately ' +
-              'answers the query, or "no" if it does not. Output only one word.',
+              "You are a cache quality judge for a Valkey, Redis, Dragonfly, and BetterDB documentation chatbot. " +
+              "Decide whether the cached response is a good answer to the user query. " +
+              'Reply "yes" if the response answers the same underlying question, even if the query is worded differently — ' +
+              "paraphrases, reorderings, and different phrasings of the same question should be accepted. " +
+              'Reply "no" only if the response focuses on a different entity (e.g. the cached answer is about Valkey ' +
+              "but the query asks about Redis or Dragonfly specifically), or addresses a fundamentally different topic. " +
+              "Output only one word: yes or no.",
             prompt: `Query: ${prompt}\n\nCached response:\n${response.slice(0, 800)}`,
           });
           return text.trim().toLowerCase().startsWith("y");
