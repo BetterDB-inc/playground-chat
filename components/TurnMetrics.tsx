@@ -53,8 +53,8 @@ function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
         detail={
           turn.semantic.hit
             ? turn.semantic.judgeAccepted
-              ? `judge ✓ ${formatSimilarity(turn.semantic.similarity)} · saved ${formatMicro(turn.semantic.savedUsd)}`
-              : `${formatSimilarity(turn.semantic.similarity)} match · saved ${formatMicro(turn.semantic.savedUsd)}`
+              ? `judge ✓ ${formatSimilarity(turn.semantic.similarity)}`
+              : `${formatSimilarity(turn.semantic.similarity)} match`
             : turn.semantic.judgeRejected && turn.semantic.nearestMiss !== undefined
               ? `judge ✗ ${formatSimilarity(turn.semantic.nearestMiss)}`
               : turn.semantic.nearestMiss !== undefined
@@ -130,14 +130,12 @@ function formatMicro(v: number | undefined): string {
 
 function Row({ label, badge, detail }: { label: string; badge: "hit" | "uncertain" | "judge-miss" | "miss"; detail?: string }) {
   return (
-    <div className="space-y-0.5">
-      <div className="flex items-center gap-2 text-[11px] font-mono">
-        <span className="text-muted-foreground w-32 shrink-0 truncate">{label}</span>
+    <div className="flex items-start gap-2 text-[11px] font-mono">
+      <span className="text-muted-foreground w-32 shrink-0 truncate">{label}</span>
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
         <Badge state={badge} />
+        {detail && <span className="text-muted-foreground/70 text-[10px] break-all">{detail}</span>}
       </div>
-      {detail && (
-        <div className="text-muted-foreground/70 font-mono text-[10px] pl-1">{detail}</div>
-      )}
     </div>
   );
 }
