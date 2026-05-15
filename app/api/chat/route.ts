@@ -271,15 +271,20 @@ export async function POST(req: Request) {
       execute: ({ writer }) => {
         const id = `cached-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         // A judge-accepted hit has confidence:'high' (promoted from 'uncertain')
-        // AND a similarity score inside the uncertainty band. Derive it from
-        // the same thresholds used to construct the cache so the UI can show
-        // "judge ✓" rather than a plain HIT.
-        const scThreshold = Number(process.env.SEMANTIC_THRESHOLD ?? 0.08);
+        // AND a similarity score inside the uncertainty band.
+        // Use the live threshold from the cache instance (not the env var) so
+        // this stays correct after configRefresh applies a loosened threshold
+        // from the optimize agent. The uncertainty band lower bound is
+        // liveThreshold - band; anything below that was always high-confidence
+        // and never reached the judge.
         const scBand = Number(process.env.SEMANTIC_UNCERTAINTY_BAND ?? 0.07);
+        const liveThreshold = queryCategory
+          ? (semanticCache._categoryThresholds[queryCategory] ?? semanticCache._defaultThreshold)
+          : semanticCache._defaultThreshold;
         const judgeAccepted =
           semanticHit.confidence === "high" &&
           semanticHit.similarity !== undefined &&
-          semanticHit.similarity > scThreshold - scBand;
+          semanticHit.similarity > liveThreshold - scBand;
 
         const metrics: TurnMetrics = {
           semantic: {
