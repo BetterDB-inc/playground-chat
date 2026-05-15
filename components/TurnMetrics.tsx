@@ -41,13 +41,21 @@ function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
 
       <Row
         label="Semantic cache"
-        badge={turn.semantic.hit}
+        badge={
+          !turn.semantic.hit
+            ? "miss"
+            : turn.semantic.confidence === "uncertain"
+              ? "uncertain"
+              : "hit"
+        }
         detail={
           turn.semantic.hit
             ? `${formatSimilarity(turn.semantic.similarity)} match · saved ${formatMicro(turn.semantic.savedUsd)}`
-            : turn.semantic.embedLatencyMs
-              ? `embed ${turn.semantic.embedLatencyMs}ms`
-              : undefined
+            : turn.semantic.nearestMiss !== undefined
+              ? `closest ${formatSimilarity(turn.semantic.nearestMiss)}${turn.semantic.embedLatencyMs ? ` · embed ${turn.semantic.embedLatencyMs}ms` : ""}`
+              : turn.semantic.embedLatencyMs
+                ? `embed ${turn.semantic.embedLatencyMs}ms`
+                : undefined
         }
       />
 
@@ -61,7 +69,7 @@ function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
               // tool order is stable within a turn, but combine name+index for safety
               key={`${t.name}-${j}`}
               label={t.name}
-              badge={t.hit}
+              badge={t.hit ? "hit" : "miss"}
               detail={`${t.latencyMs}ms`}
             />
           ))}
@@ -71,7 +79,7 @@ function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
       {!turn.semantic.hit && (
         <Row
           label="LLM exact match"
-          badge={turn.llmExactHit ?? false}
+          badge={(turn.llmExactHit ?? false) ? "hit" : "miss"}
           detail={
             turn.promptTokens !== undefined
               ? `in ${turn.promptTokens}t · out ${turn.completionTokens ?? 0}t · ${formatMicro(turn.costUsd)}`
@@ -114,26 +122,28 @@ function formatMicro(v: number | undefined): string {
   return `$${v.toFixed(4)}`;
 }
 
-function Row({ label, badge, detail }: { label: string; badge: boolean; detail?: string }) {
+function Row({ label, badge, detail }: { label: string; badge: "hit" | "uncertain" | "miss"; detail?: string }) {
   return (
     <div className="flex items-center gap-2 text-[11px] font-mono">
       <span className="text-muted-foreground w-32 shrink-0 truncate">{label}</span>
-      <Badge hit={badge} />
+      <Badge state={badge} />
       {detail && <span className="text-muted-foreground/80 truncate text-[10.5px]">{detail}</span>}
     </div>
   );
 }
 
-function Badge({ hit }: { hit: boolean }) {
+function Badge({ state }: { state: "hit" | "uncertain" | "miss" }) {
+  const styles = {
+    hit: "bg-success/15 text-success border border-success/30",
+    uncertain: "bg-amber-500/15 text-amber-500 border border-amber-500/30",
+    miss: "bg-muted text-muted-foreground border border-border",
+  };
+  const labels = { hit: "HIT", uncertain: "~HIT", miss: "MISS" };
   return (
     <span
-      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-wider shrink-0 ${
-        hit
-          ? "bg-success/15 text-success border border-success/30"
-          : "bg-muted text-muted-foreground border border-border"
-      }`}
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-wider shrink-0 ${styles[state]}`}
     >
-      {hit ? "HIT" : "MISS"}
+      {labels[state]}
     </span>
   );
 }

@@ -15,6 +15,10 @@ export interface SemanticMeta {
    * saved" without having to call the LLM at all.
    */
   hitLatencyMs?: number;
+  /** Confidence of a cache hit: 'high' = well within threshold, 'uncertain' = borderline (judge was or could be applied). */
+  confidence?: "high" | "uncertain";
+  /** Cosine distance of the nearest neighbour on a miss — shows how close the query came to a hit. */
+  nearestMiss?: number;
 }
 
 export interface TurnMetrics {

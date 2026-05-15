@@ -30,14 +30,11 @@ let prefixInFlight: Promise<"/api" | ""> | null = null;
 
 async function detectPrefix(url: string, token: string): Promise<"/api" | ""> {
   for (const prefix of ["/api", ""] as const) {
-    const probeUrl = `${url}${prefix}/mcp/instances`;
-    console.log(`[monitor-client] probe → ${probeUrl}`);
     try {
-      const res = await fetch(probeUrl, {
+      const res = await fetch(`${url}${prefix}/mcp/instances`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         signal: AbortSignal.timeout(5_000),
       });
-      console.log(`[monitor-client] probe ← ${res.status}`);
       if (res.ok) return prefix;
       // 401 means the Monitor is reachable but the token is wrong — no point
       // trying the other prefix, fail immediately with a clear message.
@@ -47,7 +44,6 @@ async function detectPrefix(url: string, token: string): Promise<"/api" | ""> {
         );
       }
     } catch (err) {
-      console.log(`[monitor-client] probe error: ${err instanceof Error ? err.message : String(err)}`);
       if (err instanceof Error && err.message.includes("401")) throw err;
       // try next prefix
     }
@@ -93,7 +89,6 @@ async function monitorFetch(
 
   const prefix = await resolvePrefix(url, token);
   const fullUrl = `${url}${prefix}${path}`;
-  console.log(`[monitor-client] → ${fullUrl}`);
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
