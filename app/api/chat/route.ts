@@ -5,6 +5,7 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
+  generateText,
   type UIMessage,
 } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -39,6 +40,48 @@ function uiMessageText(m: UIMessage): string {
     .filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
     .join("");
+}
+
+/**
+ * Infer a database category from the query for per-category threshold tuning.
+ * Lets the optimize agent (and thresholdEffectiveness) recommend different
+ * cutoffs for e.g. Valkey vs Dragonfly queries without a global blunt adjustment.
+ */
+function detectCategory(text: string): string | undefined {
+  const t = text.toLowerCase();
+  if (t.includes("dragonfly")) return "dragonfly";
+  if (t.includes("valkey")) return "valkey";
+  if (t.includes("redis")) return "redis";
+  if (t.includes("betterdb")) return "betterdb";
+  return undefined;
+}
+
+/**
+ * Keyword-overlap rerank: among top-k cosine candidates, pick the one whose
+ * response contains the most words from the query. Zero LLM calls — acts as a
+ * cheap first filter before the judge fires on truly borderline hits.
+ */
+async function rerankByKeywordOverlap(
+  query: string,
+  candidates: Array<{ response: string; similarity: number }>,
+): Promise<number> {
+  if (candidates.length <= 1) return 0;
+  const words = new Set((query.toLowerCase().match(/\b\w{3,}\b/g) ?? []) as string[]);
+  if (words.size === 0) return 0;
+  let best = 0;
+  let bestScore = -1;
+  candidates.forEach((candidate, i) => {
+    const resp = candidate.response.toLowerCase();
+    let overlap = 0;
+    for (const w of words) if (resp.includes(w)) overlap++;
+    // Tiebreak with cosine similarity (1 - distance/2); lower distance = higher similarity.
+    const score = overlap + (1 - candidate.similarity / 2);
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  });
+  return best;
 }
 
 export async function POST(req: Request) {
@@ -106,6 +149,14 @@ export async function POST(req: Request) {
   // request - only what we persist.
   const persistedQuery = scrubSecrets(lastUserText);
 
+  // createOpenAI is O(1) — create it here so the judge closure can reference
+  // it without capturing env. Also reused below for the LLM call.
+  const openai = createOpenAI({ apiKey: env.openaiKey });
+
+  // Detect which database the query is about so per-category threshold
+  // recommendations and the rolling similarity window are segmented by topic.
+  const queryCategory = detectCategory(lastUserText);
+
   // ---- Semantic cache: check ----
   // Fallback shape mirrors what the cache package returns on a true miss so
   // every downstream access (confidence, nearestMiss, costSaved) is safe.
@@ -117,6 +168,33 @@ export async function POST(req: Request) {
     semanticHit = await semanticCache.check(lastUserText, {
       staleAfterModelChange: true,
       currentModel: env.llmModel,
+      category: queryCategory,
+      // Fetch top-3 and pick the best by keyword overlap before the judge
+      // fires — catches entity-swap mismatches cheaply.
+      rerank: { k: 3, rerankFn: rerankByKeywordOverlap },
+      // LLM-as-judge for borderline hits inside the uncertainty band.
+      // gpt-4o-mini is fast (<1 s typical) and cheap. onError:'accept' means a
+      // timeout or API failure falls back to serving the uncertain hit rather
+      // than forcing a full LLM round-trip.
+      judge: {
+        judgeFn: async ({ prompt, response }) => {
+          const { text } = await generateText({
+            model: openai(process.env.JUDGE_MODEL ?? "gpt-4o-mini"),
+            system:
+              "You are a cache quality judge for a Valkey, Redis, Dragonfly, and BetterDB documentation chatbot. " +
+              "Decide whether the cached response is a good answer to the user query. " +
+              'Reply "yes" if the response answers the same underlying question, even if the query is worded differently — ' +
+              "paraphrases, reorderings, and different phrasings of the same question should be accepted. " +
+              'Reply "no" only if the response focuses on a different entity (e.g. the cached answer is about Valkey ' +
+              "but the query asks about Redis or Dragonfly specifically), or addresses a fundamentally different topic. " +
+              "Output only one word: yes or no.",
+            prompt: `Query: ${prompt}\n\nCached response:\n${response.slice(0, 800)}`,
+          });
+          return text.trim().toLowerCase().startsWith("y");
+        },
+        timeoutMs: 3000,
+        onError: "accept",
+      },
     });
   } catch (e) {
     console.warn("semantic cache check failed:", e);
@@ -192,12 +270,30 @@ export async function POST(req: Request) {
     const stream = createUIMessageStream({
       execute: ({ writer }) => {
         const id = `cached-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // A judge-accepted hit has confidence:'high' (promoted from 'uncertain')
+        // AND a similarity score inside the uncertainty band.
+        // Use the live threshold from the cache instance (not the env var) so
+        // this stays correct after configRefresh applies a loosened threshold
+        // from the optimize agent. The uncertainty band lower bound is
+        // liveThreshold - band; anything below that was always high-confidence
+        // and never reached the judge.
+        const scBand = Number(process.env.SEMANTIC_UNCERTAINTY_BAND ?? 0.07);
+        const liveThreshold = queryCategory
+          ? (semanticCache._categoryThresholds[queryCategory] ?? semanticCache._defaultThreshold)
+          : semanticCache._defaultThreshold;
+        const judgeAccepted =
+          semanticHit.confidence === "high" &&
+          semanticHit.similarity !== undefined &&
+          semanticHit.similarity > liveThreshold - scBand;
+
         const metrics: TurnMetrics = {
           semantic: {
             hit: true,
             similarity: semanticHit.similarity,
             savedUsd,
             embedLatencyMs,
+            confidence: semanticHit.confidence as "high" | "uncertain",
+            judgeAccepted,
           },
           toolHits: [],
           savedUsd,
@@ -228,7 +324,6 @@ export async function POST(req: Request) {
   }
 
   // ---- LLM call ----
-  const openai = createOpenAI({ apiKey: env.openaiKey });
   const model = wrapLanguageModel({
     model: openai(env.llmModel),
     middleware: createAgentCacheMiddleware({ cache: agentCache }),
@@ -264,6 +359,7 @@ export async function POST(req: Request) {
           model: env.llmModel,
           inputTokens,
           outputTokens,
+          category: queryCategory,
         })
         .catch((e) => console.warn("semantic cache store failed:", e));
 
@@ -318,7 +414,16 @@ export async function POST(req: Request) {
       const outputTokens = part.totalUsage?.outputTokens ?? 0;
       const costUsd = estimateLlmCost(env.llmModel, inputTokens, outputTokens);
       const metrics: TurnMetrics = {
-        semantic: { hit: false, embedLatencyMs },
+        semantic: {
+          hit: false,
+          embedLatencyMs,
+          nearestMiss: semanticHit.nearestMiss?.similarity,
+          // deltaToThreshold <= 0 means the score cleared the cosine threshold
+          // but the judge said no — distinct from a plain cosine miss.
+          judgeRejected:
+            semanticHit.nearestMiss !== undefined &&
+            semanticHit.nearestMiss.deltaToThreshold <= 0,
+        },
         toolHits: toolMetas,
         promptTokens: inputTokens,
         completionTokens: outputTokens,

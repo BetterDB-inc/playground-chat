@@ -18,8 +18,8 @@ importers:
         specifier: ^0.6.0
         version: 0.6.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
       '@betterdb/semantic-cache':
-        specifier: ^0.4.0
-        version: 0.4.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
+        specifier: ^0.5.0
+        version: 0.5.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
       '@vercel/analytics':
         specifier: ^2.0.1
         version: 2.0.1(next@16.2.4(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react@19.1.0)
@@ -221,8 +221,8 @@ packages:
       posthog-node:
         optional: true
 
-  '@betterdb/semantic-cache@0.4.0':
-    resolution: {integrity: sha512-a3XlTNOwKMstDGfuEvBQ0cUX3+aUGkGHTWfX17ggnWed0eRZ6jsHRptlyKXDapa3PxNozRN2U8gZcsqq2VPmAw==}
+  '@betterdb/semantic-cache@0.5.0':
+    resolution: {integrity: sha512-eO1vLfQcjFhfyKgJAdQZixZta20pFvzifuEeS0axSdTiAfoe1myeXtsQjI34s7hof+KenqoOH34sbHUZU4GFrg==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@anthropic-ai/sdk': '>=0.90.0'
@@ -3345,7 +3345,7 @@ snapshots:
       ai: 6.0.168(zod@3.25.76)
       posthog-node: 5.29.2
 
-  '@betterdb/semantic-cache@0.4.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)':
+  '@betterdb/semantic-cache@0.5.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)':
     dependencies:
       '@opentelemetry/api': 1.9.0
       iovalkey: 0.3.3

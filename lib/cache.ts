@@ -35,6 +35,10 @@ export const semanticCache = new SemanticCache({
   embedFn: embedText,
   defaultThreshold: Number(process.env.SEMANTIC_THRESHOLD ?? 0.08),
   defaultTtl: Number(process.env.SEMANTIC_TTL_SECONDS ?? 604800),
+  // Measured distribution: paraphrases 0.81–0.91 similarity, borderline band
+  // 0.74–0.81 (≈ 0.38–0.52 cosine distance). Default band of 0.05 is too
+  // narrow — use 0.07 so borderline hits reach the judge.
+  uncertaintyBand: Number(process.env.SEMANTIC_UNCERTAINTY_BAND ?? 0.07),
   costTable: LLM_COST_TABLE,
   // Re-read threshold config from Valkey every 30s so Monitor can tune the
   // similarity threshold live without a process restart.

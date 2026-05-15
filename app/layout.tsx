@@ -39,6 +39,15 @@ export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: TITLE,
   description: DESCRIPTION,
+  icons: {
+    icon: [
+      { url: "/favicon/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon/favicon-96x96.png", type: "image/png", sizes: "96x96" },
+      { url: "/favicon/favicon.ico" },
+    ],
+    apple: { url: "/favicon/apple-touch-icon.png", sizes: "180x180" },
+  },
+  manifest: "/favicon/site.webmanifest",
   // Image at app/opengraph-image.png is auto-detected by Next.js and emitted
   // as <meta property="og:image">. We only need to declare the textual OG
   // fields here; the image binding is by file convention.
