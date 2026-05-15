@@ -19,6 +19,10 @@ export interface SemanticMeta {
   confidence?: "high" | "uncertain";
   /** Cosine distance of the nearest neighbour on a miss — shows how close the query came to a hit. */
   nearestMiss?: number;
+  /** True when the miss originated from the LLM judge rejecting a hit that cleared the cosine threshold. */
+  judgeRejected?: boolean;
+  /** True when the LLM judge accepted a borderline hit (score was in the uncertainty band but judge said yes). */
+  judgeAccepted?: boolean;
 }
 
 export interface TurnMetrics {

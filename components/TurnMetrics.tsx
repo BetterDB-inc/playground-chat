@@ -43,19 +43,25 @@ function TurnCard({ turn, idx }: { turn: TurnMetrics; idx: number }) {
         label="Semantic cache"
         badge={
           !turn.semantic.hit
-            ? "miss"
+            ? turn.semantic.judgeRejected
+              ? "judge-miss"
+              : "miss"
             : turn.semantic.confidence === "uncertain"
               ? "uncertain"
               : "hit"
         }
         detail={
           turn.semantic.hit
-            ? `${formatSimilarity(turn.semantic.similarity)} match · saved ${formatMicro(turn.semantic.savedUsd)}`
-            : turn.semantic.nearestMiss !== undefined
-              ? `closest ${formatSimilarity(turn.semantic.nearestMiss)}${turn.semantic.embedLatencyMs ? ` · embed ${turn.semantic.embedLatencyMs}ms` : ""}`
-              : turn.semantic.embedLatencyMs
-                ? `embed ${turn.semantic.embedLatencyMs}ms`
-                : undefined
+            ? turn.semantic.judgeAccepted
+              ? `judge ✓ ${formatSimilarity(turn.semantic.similarity)} · saved ${formatMicro(turn.semantic.savedUsd)}`
+              : `${formatSimilarity(turn.semantic.similarity)} match · saved ${formatMicro(turn.semantic.savedUsd)}`
+            : turn.semantic.judgeRejected && turn.semantic.nearestMiss !== undefined
+              ? `judge ✗ ${formatSimilarity(turn.semantic.nearestMiss)}`
+              : turn.semantic.nearestMiss !== undefined
+                ? `closest ${formatSimilarity(turn.semantic.nearestMiss)}${turn.semantic.embedLatencyMs ? ` · embed ${turn.semantic.embedLatencyMs}ms` : ""}`
+                : turn.semantic.embedLatencyMs
+                  ? `embed ${turn.semantic.embedLatencyMs}ms`
+                  : undefined
         }
       />
 
@@ -122,23 +128,24 @@ function formatMicro(v: number | undefined): string {
   return `$${v.toFixed(4)}`;
 }
 
-function Row({ label, badge, detail }: { label: string; badge: "hit" | "uncertain" | "miss"; detail?: string }) {
+function Row({ label, badge, detail }: { label: string; badge: "hit" | "uncertain" | "judge-miss" | "miss"; detail?: string }) {
   return (
     <div className="flex items-center gap-2 text-[11px] font-mono">
       <span className="text-muted-foreground w-32 shrink-0 truncate">{label}</span>
       <Badge state={badge} />
-      {detail && <span className="text-muted-foreground/80 truncate text-[10.5px]">{detail}</span>}
+      {detail && <span className="text-muted-foreground/80 truncate text-[10.5px]" title={detail}>{detail}</span>}
     </div>
   );
 }
 
-function Badge({ state }: { state: "hit" | "uncertain" | "miss" }) {
+function Badge({ state }: { state: "hit" | "uncertain" | "judge-miss" | "miss" }) {
   const styles = {
     hit: "bg-success/15 text-success border border-success/30",
     uncertain: "bg-amber-500/15 text-amber-500 border border-amber-500/30",
+    "judge-miss": "bg-amber-500/15 text-amber-500 border border-amber-500/30",
     miss: "bg-muted text-muted-foreground border border-border",
   };
-  const labels = { hit: "HIT", uncertain: "~HIT", miss: "MISS" };
+  const labels = { hit: "HIT", uncertain: "~HIT", "judge-miss": "~MISS", miss: "MISS" };
   return (
     <span
       className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-wider shrink-0 ${styles[state]}`}

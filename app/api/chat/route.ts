@@ -267,6 +267,17 @@ export async function POST(req: Request) {
     const stream = createUIMessageStream({
       execute: ({ writer }) => {
         const id = `cached-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // A judge-accepted hit has confidence:'high' (promoted from 'uncertain')
+        // AND a similarity score inside the uncertainty band. Derive it from
+        // the same thresholds used to construct the cache so the UI can show
+        // "judge ✓" rather than a plain HIT.
+        const scThreshold = Number(process.env.SEMANTIC_THRESHOLD ?? 0.08);
+        const scBand = Number(process.env.SEMANTIC_UNCERTAINTY_BAND ?? 0.07);
+        const judgeAccepted =
+          semanticHit.confidence === "high" &&
+          semanticHit.similarity !== undefined &&
+          semanticHit.similarity > scThreshold - scBand;
+
         const metrics: TurnMetrics = {
           semantic: {
             hit: true,
@@ -274,6 +285,7 @@ export async function POST(req: Request) {
             savedUsd,
             embedLatencyMs,
             confidence: semanticHit.confidence as "high" | "uncertain",
+            judgeAccepted,
           },
           toolHits: [],
           savedUsd,
@@ -394,7 +406,16 @@ export async function POST(req: Request) {
       const outputTokens = part.totalUsage?.outputTokens ?? 0;
       const costUsd = estimateLlmCost(env.llmModel, inputTokens, outputTokens);
       const metrics: TurnMetrics = {
-        semantic: { hit: false, embedLatencyMs, nearestMiss: semanticHit.nearestMiss?.similarity },
+        semantic: {
+          hit: false,
+          embedLatencyMs,
+          nearestMiss: semanticHit.nearestMiss?.similarity,
+          // deltaToThreshold <= 0 means the score cleared the cosine threshold
+          // but the judge said no — distinct from a plain cosine miss.
+          judgeRejected:
+            semanticHit.nearestMiss !== undefined &&
+            semanticHit.nearestMiss.deltaToThreshold <= 0,
+        },
         toolHits: toolMetas,
         promptTokens: inputTokens,
         completionTokens: outputTokens,
