@@ -130,10 +130,14 @@ function formatMicro(v: number | undefined): string {
 
 function Row({ label, badge, detail }: { label: string; badge: "hit" | "uncertain" | "judge-miss" | "miss"; detail?: string }) {
   return (
-    <div className="flex items-center gap-2 text-[11px] font-mono">
-      <span className="text-muted-foreground w-32 shrink-0 truncate">{label}</span>
-      <Badge state={badge} />
-      {detail && <span className="text-muted-foreground/80 truncate text-[10.5px]" title={detail}>{detail}</span>}
+    <div className="space-y-0.5">
+      <div className="flex items-center gap-2 text-[11px] font-mono">
+        <span className="text-muted-foreground w-32 shrink-0 truncate">{label}</span>
+        <Badge state={badge} />
+      </div>
+      {detail && (
+        <div className="text-muted-foreground/70 font-mono text-[10px] pl-1">{detail}</div>
+      )}
     </div>
   );
 }
