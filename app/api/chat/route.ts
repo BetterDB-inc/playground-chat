@@ -175,7 +175,6 @@ export async function POST(req: Request) {
   // Check this BEFORE the semantic cache — an exact-match Valkey GET is free
   // compared to the embedding API call + vector search the semantic cache
   // requires on every request.
-  let agentLlmHit = false;
   try {
     const agentLlmResult = await agentCache.llm.check(llmCacheParams);
     if (agentLlmResult.hit && agentLlmResult.response) {
@@ -223,7 +222,6 @@ export async function POST(req: Request) {
   } catch (e) {
     console.warn("agent cache llm check failed:", e);
   }
-  void agentLlmHit; // only referenced above; suppress unused-var lint
 
   // ---- Semantic cache: check ----
   // Fallback shape mirrors what the cache package returns on a true miss so
