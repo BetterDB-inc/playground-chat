@@ -178,7 +178,6 @@ export async function POST(req: Request) {
   try {
     const agentLlmResult = await agentCache.llm.check(llmCacheParams);
     if (agentLlmResult.hit && agentLlmResult.response) {
-      agentLlmHit = true;
       const cachedText = agentLlmResult.response;
 
       await Promise.all([
