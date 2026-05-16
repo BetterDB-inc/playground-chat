@@ -183,8 +183,10 @@ export async function POST(req: Request) {
       const cachedText = agentLlmResult.response;
 
       await Promise.all([
-        logTurn({ ip, q: persistedQuery, semantic: { hit: false }, toolHits: [], costUsd: 0 }),
-        recordTurn({ semanticHit: false, savedUsd: 0, totalLatencyMs: Date.now() - turnStart }),
+        logTurn({ ip, q: persistedQuery, semantic: { hit: false }, toolHits: [], costUsd: 0, llmExactHit: true }),
+        // Count as a hit: agent cache avoided the LLM call, latency belongs in
+        // hitLatencySum not missLatencySum so avgMissLatencyMs stays accurate.
+        recordTurn({ semanticHit: true, savedUsd: 0, totalLatencyMs: Date.now() - turnStart }),
       ]);
 
       after(async () => {
