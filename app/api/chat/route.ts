@@ -1,6 +1,5 @@
 import {
   streamText,
-  wrapLanguageModel,
   stepCountIs,
   convertToModelMessages,
   createUIMessageStream,
@@ -9,7 +8,7 @@ import {
   type UIMessage,
 } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
-import { createAgentCacheMiddleware } from "@betterdb/agent-cache/ai";
+import type { LlmCacheParams } from "@betterdb/agent-cache";
 import { initCaches, agentCache, semanticCache } from "@/lib/cache";
 import { tools } from "@/lib/tools";
 import { rateLimit, reserveBudget, settleBudget } from "@/lib/rate-limit";
@@ -156,6 +155,73 @@ export async function POST(req: Request) {
   // Detect which database the query is about so per-category threshold
   // recommendations and the rolling similarity window are segmented by topic.
   const queryCategory = detectCategory(lastUserText);
+
+  // Convert UI messages to model messages once — reused by the agent cache
+  // check, the semantic cache path, and streamText. Avoids a second conversion
+  // later and ensures the LLM cache hash is identical between check and store.
+  const modelMessages = await convertToModelMessages(uiMessages);
+
+  // Build LLM cache params. System message uses string content to match the
+  // LanguageModelV1Prompt format the AI SDK passes to models internally.
+  const llmCacheParams: LlmCacheParams = {
+    model: env.llmModel,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...modelMessages.map((m) => ({ role: m.role, content: m.content })),
+    ],
+  };
+
+  // ---- Agent cache: LLM tier (exact-match, O(1) hash lookup) ----
+  // Check this BEFORE the semantic cache — an exact-match Valkey GET is free
+  // compared to the embedding API call + vector search the semantic cache
+  // requires on every request.
+  let agentLlmHit = false;
+  try {
+    const agentLlmResult = await agentCache.llm.check(llmCacheParams);
+    if (agentLlmResult.hit && agentLlmResult.response) {
+      agentLlmHit = true;
+      const cachedText = agentLlmResult.response;
+
+      await Promise.all([
+        logTurn({ ip, q: persistedQuery, semantic: { hit: false }, toolHits: [], costUsd: 0 }),
+        recordTurn({ semanticHit: false, savedUsd: 0, totalLatencyMs: Date.now() - turnStart }),
+      ]);
+
+      after(async () => {
+        await captureChatTurn({
+          prompt: lastUserText,
+          ip,
+          semantic: { hit: false },
+          toolHits: [],
+          model: env.llmModel,
+          costUsd: 0,
+          totalLatencyMs: Date.now() - turnStart,
+        });
+        await flushAnalytics();
+      });
+
+      const stream = createUIMessageStream({
+        execute: ({ writer }) => {
+          const id = `llm-cached-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const metrics: TurnMetrics = {
+            semantic: { hit: false },
+            toolHits: [],
+            llmExactHit: true,
+            savedUsd: 0,
+          };
+          writer.write({ type: "start", messageMetadata: metrics });
+          writer.write({ type: "text-start", id });
+          writer.write({ type: "text-delta", id, delta: cachedText });
+          writer.write({ type: "text-end", id });
+          writer.write({ type: "finish", messageMetadata: metrics });
+        },
+      });
+      return createUIMessageStreamResponse({ stream });
+    }
+  } catch (e) {
+    console.warn("agent cache llm check failed:", e);
+  }
+  void agentLlmHit; // only referenced above; suppress unused-var lint
 
   // ---- Semantic cache: check ----
   // Fallback shape mirrors what the cache package returns on a true miss so
@@ -324,17 +390,12 @@ export async function POST(req: Request) {
   }
 
   // ---- LLM call ----
-  const model = wrapLanguageModel({
-    model: openai(env.llmModel),
-    middleware: createAgentCacheMiddleware({ cache: agentCache }),
-  });
-
   const toolMetas: ToolMeta[] = [];
 
   const result = streamText({
-    model,
+    model: openai(env.llmModel),
     system: SYSTEM_PROMPT,
-    messages: await convertToModelMessages(uiMessages),
+    messages: modelMessages,
     tools,
     stopWhen: stepCountIs(5),
     onStepFinish: ({ toolResults }) => {
@@ -351,6 +412,12 @@ export async function POST(req: Request) {
       // True up the budget reservation - we may have estimated low.
       void settleBudget(estimatedCost, actualCost);
 
+      // Store in both caches. llmCacheParams was built before the LLM call so
+      // the hash is identical to the one used in the upfront check above.
+      const agentLlmStorePromise = agentCache.llm
+        .store(llmCacheParams, text, { tokens: { input: inputTokens, output: outputTokens } })
+        .catch((e) => console.warn("agent cache llm store failed:", e));
+
       // Store with model + tokens so subsequent semantic-cache hits can
       // report an accurate `costSaved`. This is the key change vs. before:
       // the cache itself becomes the source of truth for savings.
@@ -364,6 +431,7 @@ export async function POST(req: Request) {
         .catch((e) => console.warn("semantic cache store failed:", e));
 
       await Promise.all([
+        agentLlmStorePromise,
         semanticStorePromise,
         logTurn({
           ip,
