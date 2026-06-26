@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const query = vi.hoisted(() => vi.fn());
 vi.mock("../lib/retrieval", () => ({ retriever: { query }, DOCS_INDEX: "betterdb_docs" }));
+vi.mock("../lib/stats", () => ({ recordRetrievalQuery: vi.fn(async () => undefined) }));
 
 import { vectorSearch, getCommandByName, getBetterDbInfo } from "../lib/rag";
 

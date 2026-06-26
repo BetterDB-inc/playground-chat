@@ -1,4 +1,5 @@
 import { retriever } from "./retrieval";
+import { recordRetrievalQuery } from "./stats";
 import type { QueryHit } from "@betterdb/retrieval";
 
 /**
@@ -55,11 +56,16 @@ export async function vectorSearch(
   source?: DocSource,
   limit = 5,
 ): Promise<DocResult[]> {
+  // Record at the retrieval boundary so every tool that searches (search_docs,
+  // get_module_info, get_betterdb_info, …) feeds the Context-layer metrics, not
+  // just one. Best-effort: a metrics write must never fail the search.
+  const start = Date.now();
   const hits = await retriever.query({
     text: query,
     k: limit,
     filter: source ? { source } : undefined,
   });
+  void recordRetrievalQuery({ latencyMs: Date.now() - start, docs: hits.length }).catch(() => {});
   return hits.map(hitToDoc);
 }
 
@@ -76,11 +82,13 @@ export async function getCommandByName(
   // a handful of candidates and require an exact command-name match on title.
   // No match → not documented (better than returning the wrong command).
   const normalized = name.toUpperCase().replace(/\s+/g, "-");
+  const start = Date.now();
   const hits = await retriever.query({
     text: normalized,
     k: 10,
     filter: source ? { source } : undefined,
   });
+  void recordRetrievalQuery({ latencyMs: Date.now() - start, docs: hits.length }).catch(() => {});
   const target = canonicalCommand(name);
   const exact = hits.find((hit) => canonicalCommand(hit.fields.title ?? "") === target);
   return exact ? hitToDoc(exact) : null;
