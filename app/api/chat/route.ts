@@ -22,6 +22,9 @@ import { scrubSecrets } from "@/lib/secrets";
 import { estimateLlmCost, approximateTokens } from "@/lib/pricing";
 import { captureChatTurn, flushAnalytics } from "@/lib/analytics";
 import { after } from "next/server";
+import { getOrCreateUserId } from "@/lib/session";
+import { recallMemories, rememberFact } from "@/lib/memory";
+import { extractFacts } from "@/lib/memory-extract";
 import type { ToolMeta, TurnMetrics } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -122,6 +125,11 @@ export async function POST(req: Request) {
   }
   const lastUserText = uiMessageText(lastUser);
 
+  // Anonymous per-visitor identity for cross-session memory. A new visitor gets
+  // a fresh httpOnly cookie id, attached to whichever response we return below.
+  const { userId, setCookie } = getOrCreateUserId(req);
+  const sessionHeaders = setCookie ? { "set-cookie": setCookie } : undefined;
+
   // Sync guardrails: cheap and synchronous (length, control chars, type).
   const guardSync = validateInputSync(lastUserText);
   if (!guardSync.ok) {
@@ -216,7 +224,7 @@ export async function POST(req: Request) {
           writer.write({ type: "finish", messageMetadata: metrics });
         },
       });
-      return createUIMessageStreamResponse({ stream });
+      return createUIMessageStreamResponse({ stream, headers: sessionHeaders });
     }
   } catch (e) {
     console.warn("agent cache llm check failed:", e);
@@ -370,7 +378,7 @@ export async function POST(req: Request) {
         writer.write({ type: "finish", messageMetadata: metrics });
       },
     });
-    return createUIMessageStreamResponse({ stream });
+    return createUIMessageStreamResponse({ stream, headers: sessionHeaders });
   }
 
   // ---- Budget gate: atomic reserve, settle in onFinish ----
@@ -388,12 +396,27 @@ export async function POST(req: Request) {
     );
   }
 
+  // ---- Memory recall: personalize the system prompt for this visitor ----
+  // Only on the LLM path (cache hits serve generic doc answers, and injecting
+  // per-user memory into the cache-check params would break cross-user sharing).
+  // Best-effort: a recall failure must never break the chat.
+  let system = SYSTEM_PROMPT;
+  try {
+    const memories = await recallMemories(lastUserText, userId);
+    if (memories.length > 0) {
+      const lines = memories.map((m) => `- ${m.item.content}`).join("\n");
+      system = `${SYSTEM_PROMPT}\n\n## What you remember about this user\n${lines}`;
+    }
+  } catch (e) {
+    console.warn("memory recall failed:", e);
+  }
+
   // ---- LLM call ----
   const toolMetas: ToolMeta[] = [];
 
   const result = streamText({
     model: openai(env.llmModel),
-    system: SYSTEM_PROMPT,
+    system,
     messages: modelMessages,
     tools,
     stopWhen: stepCountIs(5),
@@ -471,10 +494,32 @@ export async function POST(req: Request) {
         });
         await flushAnalytics();
       });
+
+      // Learn durable facts about the user and remember them for next time.
+      // Deferred so the extraction LLM call never adds latency to the stream;
+      // best-effort so a failure never breaks the turn.
+      after(async () => {
+        try {
+          const facts = await extractFacts(
+            openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
+            lastUserText,
+            text,
+          );
+          for (const fact of facts) {
+            await rememberFact(fact.content, userId, {
+              importance: fact.importance,
+              tags: fact.tags,
+            });
+          }
+        } catch (e) {
+          console.warn("memory extraction failed:", e);
+        }
+      });
     },
   });
 
   return result.toUIMessageStreamResponse({
+    headers: sessionHeaders,
     messageMetadata: ({ part }) => {
       if (part.type !== "finish") return undefined;
       const inputTokens = part.totalUsage?.inputTokens ?? 0;
