@@ -143,8 +143,9 @@ export const tools = {
             url: doc.url,
           };
         },
-        // No embedding involved - only an FT.SEARCH text query.
-        { costEstimateUsd: 0 },
+        // getCommandByName embeds the command name (vector lookup), so the
+        // avoided cost on a tool-cache hit is one embedding, not zero.
+        { costEstimateUsd: vectorSearchCost(command) },
       );
     },
   }),
@@ -191,7 +192,8 @@ export const tools = {
             command_b: makeComparePart(command_b ?? command_a, srcB, docB),
           };
         },
-        { costEstimateUsd: 0 },
+        // Two embedded command lookups (one per side).
+        { costEstimateUsd: vectorSearchCost(command_a) + vectorSearchCost(command_b ?? command_a) },
       );
     },
   }),

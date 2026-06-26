@@ -12,6 +12,13 @@ and **BetterDB** documentation. Built as a runnable example of how
 metrics side-panel showing cache hits, embedding latency, and dollars saved per
 turn.
 
+It now also demonstrates the rest of the BetterDB context layer: **cross-session
+memory** ([`@betterdb/agent-memory`](https://www.npmjs.com/package/@betterdb/agent-memory)) —
+the assistant remembers durable facts about each visitor and recalls them next
+time — **retrieval** ([`@betterdb/retrieval`](https://www.npmjs.com/package/@betterdb/retrieval))
+grounding the doc search, and a **governed "Forget"** flow that files a
+human-approved deletion proposal in the Monitor instead of deleting outright.
+
 ```
 ┌──────────────────────────────────────────┬──────────────────────────┐
 │  RESP-compatible DBs and BetterDB        │  Cache Metrics           │
@@ -48,6 +55,8 @@ they're complete by enterprise standards. Take what's useful.
 | Embeddings     | `text-embedding-3-small` (1536d) · OpenAI                     |
 | Tool/LLM cache | `@betterdb/agent-cache` (exact match, Valkey-backed)          |
 | Semantic cache | `@betterdb/semantic-cache` (vector similarity, valkey-search) |
+| Memory         | `@betterdb/agent-memory` (cross-session `MemoryStore`)        |
+| Retrieval      | `@betterdb/retrieval` (`Retriever` over valkey-search)        |
 | Vector DB      | Valkey 8.1 + `valkey-search` module (HNSW, cosine distance)   |
 | Rate limit     | Per-IP sliding window via atomic Lua on Valkey                |
 | Budget gate    | Per-day USD kill-switch via atomic Lua                        |
@@ -124,24 +133,53 @@ There's no fabrication step in `/api/chat`:
 The pricing table lives in `lib/pricing.ts` and is passed to both cache
 packages so the per-package and per-route numbers don't drift.
 
+## Memory, retrieval & governed forget
+
+Three additions on top of the cache demo, all Valkey-native:
+
+- **Cross-session memory** (`@betterdb/agent-memory`) — `lib/memory.ts` wraps a
+  `MemoryStore` over the same Valkey client + OpenAI embedder, scoped per visitor
+  by an anonymous httpOnly cookie (`namespace = userId`, `lib/session.ts`). Each
+  turn: the chat route recalls the visitor's memories and injects a _"What you
+  remember about this user"_ block into the system prompt (LLM path only, so the
+  cache's cross-user sharing is preserved); after the turn, a conservative
+  extraction step (`lib/memory-extract.ts`) stores durable facts, and old
+  memories are periodically **consolidated** into a summary (throttled per
+  visitor). A **Memory** panel lists them, and the metrics panel surfaces recall
+  hit-rate, recall latency, evictions, and consolidations.
+- **Retrieval** (`@betterdb/retrieval`) — `lib/rag.ts` now runs on a `Retriever`
+  (vector KNN + tag filter) instead of hand-rolled `FT.SEARCH`; same exported
+  surface. Re-ingest the corpus with `pnpm tsx scripts/build-index.ts`.
+- **Governed forget** — the panel's **Forget** button files a _memory-forget
+  proposal_ in a connected BetterDB Monitor (Phase 13c) rather than deleting; an
+  operator approves it before anything is removed. Without a Monitor configured,
+  the button is disabled with a tooltip.
+
 ## Environment
 
 See [`.env.example`](./.env.example) for all variables and inline deploy notes.
 The most important ones:
 
-| Variable              | Default                  | Notes                                                                    |
-| --------------------- | ------------------------ | ------------------------------------------------------------------------ |
-| `OPENAI_API_KEY`      | -                        | **Required.** Validated at startup.                                      |
-| `VALKEY_URL`          | `redis://localhost:6399` | Use `rediss://` for any internet-exposed endpoint.                       |
-| `LLM_MODEL`           | `gpt-4o-mini`            | Must exist in `LLM_COST_TABLE` for accurate savings.                     |
-| `EMBED_MODEL`         | `text-embedding-3-small` | Must match `EMBED_DIM` (validated at startup).                           |
-| `EMBED_DIM`           | `1536`                   | 1536 for 3-small/ada-002, 3072 for 3-large.                              |
-| `RATE_LIMIT_PER_HOUR` | `20`                     | Per-IP, atomic Lua sliding window.                                       |
-| `RATE_LIMIT_PER_DAY`  | `100`                    | Same.                                                                    |
-| `DAILY_BUDGET_USD`    | `10`                     | Hard cap on LLM spend per day. Atomic reservation pre-call.              |
-| `SEMANTIC_THRESHOLD`  | `0.08`                   | Cosine **distance** (0–2). Lower = stricter. ~0.08 ≈ similarity ≥ 0.92.  |
-| `MODERATION_ENABLED`  | unset                    | Set to `true` for OpenAI moderation pre-check (~50ms).                   |
-| `LOG_IP_SALT`         | random per-process       | Long random string for production. Daily-rotating HMAC salt for log IPs. |
+| Variable                                                   | Default                  | Notes                                                                    |
+| ---------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------ |
+| `OPENAI_API_KEY`                                           | -                        | **Required.** Validated at startup.                                      |
+| `VALKEY_URL`                                               | `redis://localhost:6399` | Use `rediss://` for any internet-exposed endpoint.                       |
+| `LLM_MODEL`                                                | `gpt-4o-mini`            | Must exist in `LLM_COST_TABLE` for accurate savings.                     |
+| `EMBED_MODEL`                                              | `text-embedding-3-small` | Must match `EMBED_DIM` (validated at startup).                           |
+| `EMBED_DIM`                                                | `1536`                   | 1536 for 3-small/ada-002, 3072 for 3-large.                              |
+| `RATE_LIMIT_PER_HOUR`                                      | `20`                     | Per-IP, atomic Lua sliding window.                                       |
+| `RATE_LIMIT_PER_DAY`                                       | `100`                    | Same.                                                                    |
+| `DAILY_BUDGET_USD`                                         | `10`                     | Hard cap on LLM spend per day. Atomic reservation pre-call.              |
+| `SEMANTIC_THRESHOLD`                                       | `0.08`                   | Cosine **distance** (0–2). Lower = stricter. ~0.08 ≈ similarity ≥ 0.92.  |
+| `MODERATION_ENABLED`                                       | unset                    | Set to `true` for OpenAI moderation pre-check (~50ms).                   |
+| `LOG_IP_SALT`                                              | random per-process       | Long random string for production. Daily-rotating HMAC salt for log IPs. |
+| `MEMORY_NAME`                                              | `playground_mem`         | agent-memory store name (FT index prefix).                               |
+| `DOCS_INDEX`                                               | `betterdb_docs`          | retrieval docs index name.                                               |
+| `EXTRACT_MODEL`                                            | `gpt-4o-mini`            | Model used for the post-turn durable-fact extraction.                    |
+| `BETTERDB_URL` / `BETTERDB_TOKEN` / `BETTERDB_INSTANCE_ID` | -                        | Connect a Monitor to enable governed Forget (all three required).        |
+| `CONSOLIDATE_MODEL`                                        | `EXTRACT_MODEL`          | Model used to summarize old memories during consolidation.               |
+| `MEMORY_CONSOLIDATE_AFTER_SECONDS`                         | `1209600` (14d)          | Memories older than this are eligible for consolidation.                 |
+| `MEMORY_CONSOLIDATE_THROTTLE_SECONDS`                      | `3600` (1h)              | Min gap between consolidation passes per visitor.                        |
 
 ## Deploying
 

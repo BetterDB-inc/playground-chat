@@ -1,12 +1,12 @@
-import { valkey } from "./valkey";
-import { embedToBuffer } from "./embeddings";
-import { cmd, escapeSearchValue, escapeTagValue } from "./valkey-cmd";
+import { retriever } from "./retrieval";
+import { recordRetrievalQuery } from "./stats";
+import type { QueryHit } from "@betterdb/retrieval";
 
 /**
- * RAG layer over the `docs_idx` index produced by scripts/build-index.ts.
- * All queries go through `cmd()` so RediSearch reserved characters in user
- * input get escaped consistently (otherwise an LLM-supplied value containing
- * `:` or `(` produces a malformed query).
+ * RAG layer over the docs index, now backed by @betterdb/retrieval's Retriever
+ * (vector KNN + tag filters). The exported surface is unchanged so the chat
+ * route and tools don't change; only the internals swapped from hand-rolled
+ * FT.SEARCH to the SDK.
  */
 
 export interface DocResult {
@@ -25,66 +25,73 @@ export type DocSource = "valkey" | "redis" | "dragonfly" | "betterdb";
 /** Source values valid for command lookups (BetterDB has no commands). */
 export type CommandSource = Exclude<DocSource, "betterdb">;
 
+/** Map a retrieval QueryHit (doc body = `text`, metadata = `fields`) to DocResult. */
+function hitToDoc(hit: QueryHit): DocResult {
+  const title = hit.fields.title ?? "";
+  return {
+    id: hit.id,
+    title,
+    // Ingest embeds `${title}\n\n${body}` so titles influence the vector; strip
+    // that prefix back off here so `content` is body-only and the title isn't
+    // duplicated in RAG context / cached tool payloads.
+    content: stripTitlePrefix(hit.text, title),
+    source: hit.fields.source ?? "",
+    kind: hit.fields.kind ?? "",
+    url: hit.fields.url ?? "",
+    score: hit.score,
+  };
+}
+
+/** Remove a leading `${title}\n\n` the ingest prepended, if present. */
+function stripTitlePrefix(text: string, title: string): string {
+  if (title === "") {
+    return text;
+  }
+  const prefix = `${title}\n\n`;
+  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
+}
+
 export async function vectorSearch(
   query: string,
   source?: DocSource,
   limit = 5,
 ): Promise<DocResult[]> {
-  const qVec = await embedToBuffer(query);
-  const filter = source ? `@source:{${escapeTagValue(source)}}` : "*";
+  // Record at the retrieval boundary so every tool that searches (search_docs,
+  // get_module_info, get_betterdb_info, …) feeds the Context-layer metrics, not
+  // just one. Best-effort: a metrics write must never fail the search.
+  const start = Date.now();
+  const hits = await retriever.query({
+    text: query,
+    k: limit,
+    filter: source ? { source } : undefined,
+  });
+  void recordRetrievalQuery({ latencyMs: Date.now() - start, docs: hits.length }).catch(() => {});
+  return hits.map(hitToDoc);
+}
 
-  const raw = await cmd<unknown[]>(
-    valkey,
-    "FT.SEARCH",
-    "docs_idx",
-    `(${filter})=>[KNN ${limit} @embedding $vec]`,
-    "PARAMS",
-    "2",
-    "vec",
-    qVec,
-    "RETURN",
-    "6",
-    "title",
-    "content",
-    "source",
-    "kind",
-    "url",
-    "__embedding_score",
-    "DIALECT",
-    "2",
-  );
-  return parseSearchResults(raw);
+/** Canonical command form for matching: strip punctuation/space, uppercase. */
+function canonicalCommand(s: string): string {
+  return s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
 export async function getCommandByName(
   name: string,
   source?: CommandSource,
 ): Promise<DocResult | null> {
-  // RediSearch tokenises on whitespace and punctuation. Command names like
-  // "FT.SEARCH" must be queried as escaped literals or the dot is treated as
-  // a separator and we get false matches.
-  const normalized = escapeSearchValue(name.toUpperCase().replace(/\s+/g, "-"));
-  const srcFilter = source ? `@source:{${escapeTagValue(source)}} ` : "";
-  const query = `${srcFilter}@title:${normalized}`;
-
-  const raw = await cmd<unknown[]>(
-    valkey,
-    "FT.SEARCH",
-    "docs_idx",
-    query,
-    "LIMIT",
-    "0",
-    "1",
-    "RETURN",
-    "5",
-    "title",
-    "content",
-    "source",
-    "url",
-    "kind",
-  );
-  const results = parseSearchResults(raw);
-  return results[0] ?? null;
+  // Vector NN alone can surface a near-neighbour with similar wording, so pull
+  // a handful of candidates and require an exact command-name match on title.
+  // No match → not documented (better than returning the wrong command).
+  const normalized = name.toUpperCase().replace(/\s+/g, "-");
+  const start = Date.now();
+  const hits = await retriever.query({
+    text: normalized,
+    k: 10,
+    filter: source ? { source } : undefined,
+  });
+  void recordRetrievalQuery({ latencyMs: Date.now() - start, docs: hits.length }).catch(() => {});
+  const target = canonicalCommand(name);
+  const exact = hits.find((hit) => canonicalCommand(hit.fields.title ?? "") === target);
+  return exact ? hitToDoc(exact) : null;
 }
 
 const MODULE_QUERY_TERMS: Record<string, string> = {
@@ -101,45 +108,9 @@ export async function getModuleInfo(module: string): Promise<DocResult | null> {
 }
 
 /**
- * Look up a BetterDB topic. Mirrors getModuleInfo but scoped to the
- * betterdb source so the LLM has a focused way to ask "what does BetterDB
- * do for X" without polluting the result with adjacent OSS docs.
+ * Look up a BetterDB topic. Mirrors getModuleInfo but scoped to the betterdb
+ * source so the LLM has a focused way to ask "what does BetterDB do for X".
  */
 export async function getBetterDbInfo(topic: string): Promise<DocResult[]> {
   return vectorSearch(topic, "betterdb", 3);
-}
-
-/**
- * FT.SEARCH reply is `[total, key1, [field, value, ...], key2, [...], ...]`.
- * We defensively check the count before treating subsequent entries as keys.
- */
-function parseSearchResults(raw: unknown[]): DocResult[] {
-  if (!Array.isArray(raw) || raw.length === 0) return [];
-  const total = typeof raw[0] === "number" ? raw[0] : Number(raw[0]);
-  if (!total || total <= 0) return [];
-
-  const results: DocResult[] = [];
-  for (let i = 1; i < raw.length; i += 2) {
-    const key = typeof raw[i] === "string" ? (raw[i] as string) : String(raw[i] ?? "");
-    const fields = raw[i + 1];
-    if (!Array.isArray(fields)) continue;
-
-    const map: Record<string, string> = {};
-    for (let j = 0; j < fields.length; j += 2) {
-      const k = String(fields[j] ?? "");
-      const v = String(fields[j + 1] ?? "");
-      if (k) map[k] = v;
-    }
-    const id = key.replace(/^doc:/, "");
-    results.push({
-      id,
-      title: map["title"] ?? "",
-      content: map["content"] ?? "",
-      source: map["source"] ?? "",
-      kind: map["kind"] ?? "",
-      url: map["url"] ?? "",
-      score: parseFloat(map["__embedding_score"] ?? "1"),
-    });
-  }
-  return results;
 }

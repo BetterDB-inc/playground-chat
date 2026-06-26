@@ -14,7 +14,7 @@ import { tools } from "@/lib/tools";
 import { rateLimit, reserveBudget, settleBudget } from "@/lib/rate-limit";
 import { validateInputSync, moderateInput } from "@/lib/guardrails";
 import { logTurn } from "@/lib/logger";
-import { recordTurn } from "@/lib/stats";
+import { recordTurn, recordMemoryRecall, recordConsolidation } from "@/lib/stats";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 import { validateEnv } from "@/lib/env";
 import { detectClientIp } from "@/lib/client-ip";
@@ -22,6 +22,9 @@ import { scrubSecrets } from "@/lib/secrets";
 import { estimateLlmCost, approximateTokens } from "@/lib/pricing";
 import { captureChatTurn, flushAnalytics } from "@/lib/analytics";
 import { after } from "next/server";
+import { getOrCreateUserId } from "@/lib/session";
+import { recallMemories, rememberFact, maybeConsolidate } from "@/lib/memory";
+import { extractFacts } from "@/lib/memory-extract";
 import type { ToolMeta, TurnMetrics } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -83,6 +86,84 @@ async function rerankByKeywordOverlap(
   return best;
 }
 
+/**
+ * Post-turn memory maintenance: extract + remember durable facts, then run the
+ * throttled consolidation pass. Runs on every turn — cache hits included — so a
+ * fact shared on a cached turn is still stored and old memories still get
+ * summarized. Best-effort and write-only: it never changes the reply, so it's
+ * safe on cache paths (unlike recall, which would break cross-user sharing).
+ * Callers pass already-scrubbed text — durable facts are persisted and recalled
+ * into future prompts, so credentials must never reach here.
+ */
+async function postTurnMemory(
+  openai: ReturnType<typeof createOpenAI>,
+  userId: string,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
+  // Both LLM calls below hit OpenAI, so each books its cost against the same
+  // daily USD kill-switch that gates the main path: reserve a pessimistic
+  // estimate up front (skip the work if the budget is spent), then settle the
+  // actual spend so the counter stays accurate.
+  const extractModel = process.env.EXTRACT_MODEL ?? "gpt-4o-mini";
+  const estCost = estimateLlmCost(
+    extractModel,
+    approximateTokens(`${userText}\n${assistantText}`) + 400,
+    256,
+  );
+  // Gate extraction on the budget, but skip ONLY extraction when it's spent —
+  // consolidation below makes its own separate reservation, so it must still get
+  // a chance to run (and will no-op if it's also over budget).
+  const reserve = await reserveBudget(estCost);
+  if (reserve.ok) {
+    try {
+      const { facts, usage } = await extractFacts(openai(extractModel), userText, assistantText);
+      await settleBudget(
+        estCost,
+        estimateLlmCost(extractModel, usage.inputTokens, usage.outputTokens),
+      );
+      for (const fact of facts) {
+        await rememberFact(fact.content, userId, {
+          importance: fact.importance,
+          tags: fact.tags,
+        });
+      }
+    } catch (e) {
+      console.warn("memory extraction failed:", e);
+    }
+  }
+
+  const consolidateModel = process.env.CONSOLIDATE_MODEL ?? extractModel;
+  try {
+    const result = await maybeConsolidate(userId, async (items) => {
+      const joined = items.map((m) => `- ${m.content}`).join("\n");
+      // Reserve for this consolidation call too; skip it if over budget.
+      const estC = estimateLlmCost(consolidateModel, approximateTokens(joined) + 400, 256);
+      const reserveC = await reserveBudget(estC);
+      if (!reserveC.ok) {
+        throw new Error("daily budget exhausted; skipping consolidation");
+      }
+      const { text: summary, usage } = await generateText({
+        model: openai(consolidateModel),
+        system:
+          "Summarize these durable facts about a single user into one concise paragraph. " +
+          "Preserve specifics (stack, preferences, goals); drop redundancy. Output only the summary.",
+        prompt: joined,
+      });
+      await settleBudget(
+        estC,
+        estimateLlmCost(consolidateModel, usage?.inputTokens ?? 0, usage?.outputTokens ?? 0),
+      );
+      return summary.trim();
+    });
+    if (result) {
+      await recordConsolidation(result.created.length);
+    }
+  } catch (e) {
+    console.warn("memory consolidation failed:", e);
+  }
+}
+
 export async function POST(req: Request) {
   // Fail fast if the deployment is misconfigured. validateEnv() is memoized
   // so this is essentially free after the first call.
@@ -122,16 +203,23 @@ export async function POST(req: Request) {
   }
   const lastUserText = uiMessageText(lastUser);
 
+  // Anonymous per-visitor identity for cross-session memory. A new visitor gets
+  // a fresh httpOnly cookie id, attached to whichever response we return below.
+  const { userId, setCookie } = getOrCreateUserId(req);
+  const sessionHeaders = setCookie ? { "set-cookie": setCookie } : undefined;
+
   // Sync guardrails: cheap and synchronous (length, control chars, type).
+  // Carry sessionHeaders on every post-mint response (errors included) so a new
+  // visitor's cookie sticks on the first attempt, not only on a successful turn.
   const guardSync = validateInputSync(lastUserText);
   if (!guardSync.ok) {
-    return Response.json({ error: guardSync.reason }, { status: 400 });
+    return Response.json({ error: guardSync.reason }, { status: 400, headers: sessionHeaders });
   }
 
   // Async guardrails: OpenAI Moderation (no-op unless MODERATION_ENABLED).
   const guardAsync = await moderateInput(lastUserText);
   if (!guardAsync.ok) {
-    return Response.json({ error: guardAsync.reason }, { status: 400 });
+    return Response.json({ error: guardAsync.reason }, { status: 400, headers: sessionHeaders });
   }
 
   // Rate limit (atomic Lua, sliding window).
@@ -139,7 +227,10 @@ export async function POST(req: Request) {
   if (!rl.ok) {
     return Response.json(
       { error: "rate_limited", retryAfter: rl.retryAfter },
-      { status: 429, headers: { "Retry-After": String(rl.retryAfter ?? 60) } },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rl.retryAfter ?? 60), ...(sessionHeaders ?? {}) },
+      },
     );
   }
 
@@ -181,7 +272,14 @@ export async function POST(req: Request) {
       const cachedText = agentLlmResult.response;
 
       await Promise.all([
-        logTurn({ ip, q: persistedQuery, semantic: { hit: false }, toolHits: [], costUsd: 0, llmExactHit: true }),
+        logTurn({
+          ip,
+          q: persistedQuery,
+          semantic: { hit: false },
+          toolHits: [],
+          costUsd: 0,
+          llmExactHit: true,
+        }),
         // Count as a hit: agent cache avoided the LLM call, latency belongs in
         // hitLatencySum not missLatencySum so avgMissLatencyMs stays accurate.
         recordTurn({ semanticHit: true, savedUsd: 0, totalLatencyMs: Date.now() - turnStart }),
@@ -197,6 +295,7 @@ export async function POST(req: Request) {
           costUsd: 0,
           totalLatencyMs: Date.now() - turnStart,
         });
+        await postTurnMemory(openai, userId, persistedQuery, scrubSecrets(cachedText));
         await flushAnalytics();
       });
 
@@ -216,7 +315,7 @@ export async function POST(req: Request) {
           writer.write({ type: "finish", messageMetadata: metrics });
         },
       });
-      return createUIMessageStreamResponse({ stream });
+      return createUIMessageStreamResponse({ stream, headers: sessionHeaders });
     }
   } catch (e) {
     console.warn("agent cache llm check failed:", e);
@@ -325,6 +424,7 @@ export async function POST(req: Request) {
         costUsd: 0,
         totalLatencyMs: Date.now() - turnStart,
       });
+      await postTurnMemory(openai, userId, persistedQuery, scrubSecrets(text));
       await flushAnalytics();
     });
 
@@ -370,7 +470,7 @@ export async function POST(req: Request) {
         writer.write({ type: "finish", messageMetadata: metrics });
       },
     });
-    return createUIMessageStreamResponse({ stream });
+    return createUIMessageStreamResponse({ stream, headers: sessionHeaders });
   }
 
   // ---- Budget gate: atomic reserve, settle in onFinish ----
@@ -384,8 +484,37 @@ export async function POST(req: Request) {
         spentUsd: reserve.spentUsd,
         budgetUsd: reserve.budgetUsd,
       },
-      { status: 429 },
+      { status: 429, headers: sessionHeaders },
     );
+  }
+
+  // ---- Memory recall: personalize the system prompt for this visitor ----
+  // Only on the LLM path (cache hits serve generic doc answers, and injecting
+  // per-user memory into the cache-check params would break cross-user sharing).
+  // Best-effort: a recall failure must never break the chat.
+  let system = SYSTEM_PROMPT;
+  // True once this turn's reply is shaped by per-visitor memory. Such a reply is
+  // user-specific and must NOT be written to the shared agent/semantic caches —
+  // those are keyed on the base prompt/query (no memory block), so caching it
+  // would serve one visitor's memory-shaped answer to another on the same query.
+  let personalized = false;
+  try {
+    const recallStart = Date.now();
+    // Embed the scrubbed query (same text post-turn extraction/persistence use),
+    // so credential-shaped content never reaches the embedding API and recall
+    // stays consistent with what gets stored.
+    const memories = await recallMemories(persistedQuery, userId);
+    void recordMemoryRecall({
+      hit: memories.length > 0,
+      latencyMs: Date.now() - recallStart,
+    }).catch(() => {});
+    if (memories.length > 0) {
+      const lines = memories.map((m) => `- ${m.item.content}`).join("\n");
+      system = `${SYSTEM_PROMPT}\n\n## What you remember about this user\n${lines}`;
+      personalized = true;
+    }
+  } catch (e) {
+    console.warn("memory recall failed:", e);
   }
 
   // ---- LLM call ----
@@ -393,7 +522,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: openai(env.llmModel),
-    system: SYSTEM_PROMPT,
+    system,
     messages: modelMessages,
     tools,
     stopWhen: stepCountIs(5),
@@ -411,23 +540,32 @@ export async function POST(req: Request) {
       // True up the budget reservation - we may have estimated low.
       void settleBudget(estimatedCost, actualCost);
 
-      // Store in both caches. llmCacheParams was built before the LLM call so
-      // the hash is identical to the one used in the upfront check above.
-      const agentLlmStorePromise = agentCache.llm
-        .store(llmCacheParams, text, { tokens: { input: inputTokens, output: outputTokens } })
-        .catch((e) => console.warn("agent cache llm store failed:", e));
+      // Store in both caches — but only when the reply wasn't personalized by
+      // this visitor's memory. A memory-shaped answer is user-specific, and both
+      // cache keys omit the memory block (llmCacheParams uses the base
+      // SYSTEM_PROMPT; the semantic cache keys on the bare query), so caching it
+      // would leak one visitor's answer to the next on the same question.
+      // llmCacheParams was built before the LLM call so the hash is identical to
+      // the one used in the upfront check above.
+      const agentLlmStorePromise = personalized
+        ? Promise.resolve()
+        : agentCache.llm
+            .store(llmCacheParams, text, { tokens: { input: inputTokens, output: outputTokens } })
+            .catch((e) => console.warn("agent cache llm store failed:", e));
 
       // Store with model + tokens so subsequent semantic-cache hits can
       // report an accurate `costSaved`. This is the key change vs. before:
       // the cache itself becomes the source of truth for savings.
-      const semanticStorePromise = semanticCache
-        .store(lastUserText, text, {
-          model: env.llmModel,
-          inputTokens,
-          outputTokens,
-          category: queryCategory,
-        })
-        .catch((e) => console.warn("semantic cache store failed:", e));
+      const semanticStorePromise = personalized
+        ? Promise.resolve()
+        : semanticCache
+            .store(lastUserText, text, {
+              model: env.llmModel,
+              inputTokens,
+              outputTokens,
+              category: queryCategory,
+            })
+            .catch((e) => console.warn("semantic cache store failed:", e));
 
       await Promise.all([
         agentLlmStorePromise,
@@ -471,10 +609,15 @@ export async function POST(req: Request) {
         });
         await flushAnalytics();
       });
+
+      // Learn facts + run the throttled consolidation pass. Deferred so neither
+      // LLM call adds latency to the stream; best-effort so it never breaks it.
+      after(() => postTurnMemory(openai, userId, persistedQuery, scrubSecrets(text)));
     },
   });
 
   return result.toUIMessageStreamResponse({
+    headers: sessionHeaders,
     messageMetadata: ({ part }) => {
       if (part.type !== "finish") return undefined;
       const inputTokens = part.totalUsage?.inputTokens ?? 0;
@@ -488,8 +631,7 @@ export async function POST(req: Request) {
           // deltaToThreshold <= 0 means the score cleared the cosine threshold
           // but the judge said no — distinct from a plain cosine miss.
           judgeRejected:
-            semanticHit.nearestMiss !== undefined &&
-            semanticHit.nearestMiss.deltaToThreshold <= 0,
+            semanticHit.nearestMiss !== undefined && semanticHit.nearestMiss.deltaToThreshold <= 0,
         },
         toolHits: toolMetas,
         promptTokens: inputTokens,

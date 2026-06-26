@@ -1,0 +1,110 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const query = vi.hoisted(() => vi.fn());
+vi.mock("../lib/retrieval", () => ({ retriever: { query }, DOCS_INDEX: "betterdb_docs" }));
+vi.mock("../lib/stats", () => ({ recordRetrievalQuery: vi.fn(async () => undefined) }));
+
+import { vectorSearch, getCommandByName, getBetterDbInfo } from "../lib/rag";
+
+beforeEach(() => {
+  query.mockReset();
+});
+
+describe("lib/rag (retrieval-backed)", () => {
+  it("vectorSearch maps QueryHit -> DocResult and passes the source filter", async () => {
+    query.mockResolvedValue([
+      {
+        id: "d1",
+        score: 0.12,
+        text: "Valkey is a key-value store.",
+        fields: { title: "What is Valkey?", source: "valkey", kind: "faq", url: "https://x" },
+      },
+    ]);
+    const res = await vectorSearch("what is valkey", "valkey", 3);
+    expect(query).toHaveBeenCalledWith({
+      text: "what is valkey",
+      k: 3,
+      filter: { source: "valkey" },
+    });
+    expect(res).toEqual([
+      {
+        id: "d1",
+        title: "What is Valkey?",
+        content: "Valkey is a key-value store.",
+        source: "valkey",
+        kind: "faq",
+        url: "https://x",
+        score: 0.12,
+      },
+    ]);
+  });
+
+  it("vectorSearch omits the filter when no source", async () => {
+    query.mockResolvedValue([]);
+    await vectorSearch("anything");
+    expect(query).toHaveBeenCalledWith({ text: "anything", k: 5, filter: undefined });
+  });
+
+  it("vectorSearch strips the embedded title prefix from content", async () => {
+    query.mockResolvedValue([
+      {
+        id: "d2",
+        score: 0.1,
+        text: "FT.SEARCH\n\nFT.SEARCH runs a query against an index.",
+        fields: { title: "FT.SEARCH", source: "valkey", kind: "command", url: "u" },
+      },
+    ]);
+    const res = await vectorSearch("ft search", "valkey");
+    expect(res[0]?.content).toBe("FT.SEARCH runs a query against an index.");
+    expect(res[0]?.title).toBe("FT.SEARCH");
+  });
+
+  it("getCommandByName returns the candidate whose title matches the command", async () => {
+    query.mockResolvedValue([
+      {
+        id: "near",
+        score: 0.04,
+        text: "FT.AGGREGATE groups results.",
+        fields: { title: "FT.AGGREGATE", source: "valkey", kind: "command", url: "u1" },
+      },
+      {
+        id: "c1",
+        score: 0.05,
+        text: "FT.SEARCH runs a query.",
+        fields: { title: "FT.SEARCH", source: "valkey", kind: "command", url: "u2" },
+      },
+    ]);
+    const res = await getCommandByName("ft search", "valkey");
+    expect(query).toHaveBeenCalledWith({ text: "FT-SEARCH", k: 10, filter: { source: "valkey" } });
+    // Despite FT.AGGREGATE ranking higher by vector distance, the exact
+    // title match wins.
+    expect(res?.content).toBe("FT.SEARCH runs a query.");
+  });
+
+  it("getCommandByName returns null when no candidate title matches", async () => {
+    query.mockResolvedValue([
+      {
+        id: "near",
+        score: 0.04,
+        text: "FT.AGGREGATE groups results.",
+        fields: { title: "FT.AGGREGATE", source: "valkey", kind: "command", url: "u1" },
+      },
+    ]);
+    expect(await getCommandByName("ft search", "valkey")).toBeNull();
+  });
+
+  it("getCommandByName returns null on no hits", async () => {
+    query.mockResolvedValue([]);
+    expect(await getCommandByName("nope")).toBeNull();
+  });
+
+  it("getBetterDbInfo scopes to betterdb, top 3", async () => {
+    query.mockResolvedValue([]);
+    await getBetterDbInfo("vector search");
+    expect(query).toHaveBeenCalledWith({
+      text: "vector search",
+      k: 3,
+      filter: { source: "betterdb" },
+    });
+  });
+});

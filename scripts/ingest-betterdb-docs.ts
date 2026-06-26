@@ -38,6 +38,15 @@ function isInternalDocPage(url: string): boolean {
   return true;
 }
 
+/**
+ * Some nav links point at `/docs/<path>` (e.g. /docs/packages/semantic-cache),
+ * but those pages actually live at `/<path>` — the `/docs/` form 404s. Collapse
+ * the erroneous prefix so discovery reaches the real pages and doesn't dupe them.
+ */
+function normalizeUrl(url: string): string {
+  return url.replace(`${ROOT}docs/`, ROOT);
+}
+
 async function discoverPages(): Promise<string[]> {
   const visited = new Set<string>();
   const found = new Set<string>([ROOT]);
@@ -51,8 +60,10 @@ async function discoverPages(): Promise<string[]> {
       const html = await politeFetchHtml(url);
       const links = extractLinks(html, url).filter(isInternalDocPage);
       for (const link of links) {
-        // Strip URL fragments (#section) so we don't crawl the same page twice.
-        const clean = link.split("#")[0];
+        // Strip URL fragments (#section) so we don't crawl the same page twice,
+        // and fix the bogus /docs/ prefix some nav links carry.
+        const base = link.split("#")[0];
+        const clean = base ? normalizeUrl(base) : undefined;
         if (clean && !found.has(clean) && found.size < MAX_PAGES) {
           found.add(clean);
           queue.push(clean);
