@@ -110,9 +110,10 @@ beforeEach(() => {
   mocks.recallMemories.mockResolvedValue([{ item: { content: "prefers dark mode" } }]);
   mocks.rememberFact.mockResolvedValue("mem-id");
   mocks.maybeConsolidate.mockResolvedValue(null);
-  mocks.extractFacts.mockResolvedValue([
-    { content: "likes Valkey", importance: 0.8, tags: ["pref"] },
-  ]);
+  mocks.extractFacts.mockResolvedValue({
+    facts: [{ content: "likes Valkey", importance: 0.8, tags: ["pref"] }],
+    usage: { inputTokens: 10, outputTokens: 5 },
+  });
 });
 
 describe("chat route — recall → inject → remember", () => {

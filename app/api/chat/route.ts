@@ -92,6 +92,8 @@ async function rerankByKeywordOverlap(
  * fact shared on a cached turn is still stored and old memories still get
  * summarized. Best-effort and write-only: it never changes the reply, so it's
  * safe on cache paths (unlike recall, which would break cross-user sharing).
+ * Callers pass already-scrubbed text — durable facts are persisted and recalled
+ * into future prompts, so credentials must never reach here.
  */
 async function postTurnMemory(
   openai: ReturnType<typeof createOpenAI>,
@@ -99,13 +101,14 @@ async function postTurnMemory(
   userText: string,
   assistantText: string,
 ): Promise<void> {
-  // These extraction/consolidation calls hit OpenAI, so book them against the
-  // same daily USD kill-switch that gates the main LLM path. If the budget is
-  // spent, skip the learning this turn rather than spend past the cap.
+  // Both LLM calls below hit OpenAI, so each books its cost against the same
+  // daily USD kill-switch that gates the main path: reserve a pessimistic
+  // estimate up front (skip the work if the budget is spent), then settle the
+  // actual spend so the counter stays accurate.
   const extractModel = process.env.EXTRACT_MODEL ?? "gpt-4o-mini";
   const estCost = estimateLlmCost(
     extractModel,
-    approximateTokens(`${userText}\n${assistantText}`),
+    approximateTokens(`${userText}\n${assistantText}`) + 400,
     256,
   );
   const reserve = await reserveBudget(estCost);
@@ -114,7 +117,11 @@ async function postTurnMemory(
   }
 
   try {
-    const facts = await extractFacts(openai(extractModel), userText, assistantText);
+    const { facts, usage } = await extractFacts(openai(extractModel), userText, assistantText);
+    await settleBudget(
+      estCost,
+      estimateLlmCost(extractModel, usage.inputTokens, usage.outputTokens),
+    );
     for (const fact of facts) {
       await rememberFact(fact.content, userId, {
         importance: fact.importance,
@@ -125,16 +132,27 @@ async function postTurnMemory(
     console.warn("memory extraction failed:", e);
   }
 
+  const consolidateModel = process.env.CONSOLIDATE_MODEL ?? extractModel;
   try {
     const result = await maybeConsolidate(userId, async (items) => {
       const joined = items.map((m) => `- ${m.content}`).join("\n");
-      const { text: summary } = await generateText({
-        model: openai(process.env.CONSOLIDATE_MODEL ?? process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
+      // Reserve for this consolidation call too; skip it if over budget.
+      const estC = estimateLlmCost(consolidateModel, approximateTokens(joined) + 400, 256);
+      const reserveC = await reserveBudget(estC);
+      if (!reserveC.ok) {
+        throw new Error("daily budget exhausted; skipping consolidation");
+      }
+      const { text: summary, usage } = await generateText({
+        model: openai(consolidateModel),
         system:
           "Summarize these durable facts about a single user into one concise paragraph. " +
           "Preserve specifics (stack, preferences, goals); drop redundancy. Output only the summary.",
         prompt: joined,
       });
+      await settleBudget(
+        estC,
+        estimateLlmCost(consolidateModel, usage?.inputTokens ?? 0, usage?.outputTokens ?? 0),
+      );
       return summary.trim();
     });
     if (result) {
@@ -276,7 +294,7 @@ export async function POST(req: Request) {
           costUsd: 0,
           totalLatencyMs: Date.now() - turnStart,
         });
-        await postTurnMemory(openai, userId, lastUserText, cachedText);
+        await postTurnMemory(openai, userId, persistedQuery, scrubSecrets(cachedText));
         await flushAnalytics();
       });
 
@@ -405,7 +423,7 @@ export async function POST(req: Request) {
         costUsd: 0,
         totalLatencyMs: Date.now() - turnStart,
       });
-      await postTurnMemory(openai, userId, lastUserText, text);
+      await postTurnMemory(openai, userId, persistedQuery, scrubSecrets(text));
       await flushAnalytics();
     });
 
@@ -575,7 +593,7 @@ export async function POST(req: Request) {
 
       // Learn facts + run the throttled consolidation pass. Deferred so neither
       // LLM call adds latency to the stream; best-effort so it never breaks it.
-      after(() => postTurnMemory(openai, userId, lastUserText, text));
+      after(() => postTurnMemory(openai, userId, persistedQuery, scrubSecrets(text)));
     },
   });
 

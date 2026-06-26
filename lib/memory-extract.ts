@@ -12,6 +12,12 @@ export interface ExtractedFact {
   tags: string[];
 }
 
+export interface ExtractResult {
+  facts: ExtractedFact[];
+  /** Token usage of the extraction call, for budget accounting. */
+  usage: { inputTokens: number; outputTokens: number };
+}
+
 const EXTRACT_SYSTEM = [
   "You extract DURABLE facts about the USER from a single chat turn — stable",
   "preferences, identity, goals, or working context worth remembering across",
@@ -56,16 +62,19 @@ export function parseFacts(raw: string): ExtractedFact[] {
     .slice(0, 5);
 }
 
-/** Run the extraction LLM over a turn and return durable facts (empty on error). */
+/** Run the extraction LLM over a turn and return durable facts + token usage. */
 export async function extractFacts(
   model: LanguageModel,
   userText: string,
   assistantText: string,
-): Promise<ExtractedFact[]> {
-  const { text } = await generateText({
+): Promise<ExtractResult> {
+  const { text, usage } = await generateText({
     model,
     system: EXTRACT_SYSTEM,
     prompt: `User said:\n${userText}\n\nAssistant replied:\n${assistantText.slice(0, 500)}\n\nExtract durable facts about the user as a JSON array.`,
   });
-  return parseFacts(text);
+  return {
+    facts: parseFacts(text),
+    usage: { inputTokens: usage?.inputTokens ?? 0, outputTokens: usage?.outputTokens ?? 0 },
+  };
 }
