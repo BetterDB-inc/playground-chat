@@ -1,12 +1,14 @@
 import { retriever } from "@/lib/retrieval";
 import { memoryStore } from "@/lib/memory";
+import { readContextCounters } from "@/lib/stats";
 
 export const runtime = "nodejs";
 
 /**
- * Context-layer stats for the metrics panel: retrieval index health and the
- * memory store gauge. Each source is independent and degrades to null if its
- * index doesn't exist yet (e.g. before the first ingest / first memory).
+ * Context-layer stats for the metrics panel: retrieval index health + query
+ * activity, and the memory store gauge + recall activity. The index/store
+ * gauges degrade to null if their index doesn't exist yet (before the first
+ * ingest / first memory); the activity counters are always available.
  */
 export async function GET() {
   let retrieval: { numDocs: number; percentIndexed: number; indexingState: string } | null = null;
@@ -29,5 +31,10 @@ export async function GET() {
     // memory index not created yet
   }
 
-  return Response.json({ retrieval, memory }, { headers: { "Cache-Control": "no-store" } });
+  const counters = await readContextCounters().catch(() => null);
+
+  return Response.json(
+    { retrieval, memory, counters },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }

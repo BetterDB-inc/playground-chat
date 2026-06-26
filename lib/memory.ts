@@ -1,4 +1,9 @@
-import { MemoryStore, type MemoryStoreClient } from "@betterdb/agent-memory";
+import {
+  MemoryStore,
+  type MemoryStoreClient,
+  type MemoryItem,
+  type ConsolidateResult,
+} from "@betterdb/agent-memory";
 import { valkey } from "./valkey";
 import { embedText } from "./embeddings";
 
@@ -13,6 +18,18 @@ import { embedText } from "./embeddings";
  */
 export const MEMORY_NAME = process.env.MEMORY_NAME ?? "playground_mem";
 const DEFAULT_RECALL_K = 5;
+
+/** Compress memories older than this (default 14 days) into a single summary. */
+const CONSOLIDATE_AFTER_SECONDS = Number(
+  process.env.MEMORY_CONSOLIDATE_AFTER_SECONDS ?? 14 * 24 * 60 * 60,
+);
+
+/** Don't run consolidation for the same visitor more often than this (default 1h). */
+const CONSOLIDATE_THROTTLE_SECONDS = Number(
+  process.env.MEMORY_CONSOLIDATE_THROTTLE_SECONDS ?? 60 * 60,
+);
+
+export type ConsolidationSummarizer = (items: MemoryItem[]) => Promise<string>;
 
 export const memoryStore = new MemoryStore({
   client: valkey as unknown as MemoryStoreClient,
@@ -58,4 +75,38 @@ export async function rememberFact(
 export async function listMemories(userId: string, limit = 50) {
   await ensureMemoryIndex();
   return memoryStore.list({ namespace: userId, limit });
+}
+
+/**
+ * Acquire a short-lived per-user lock so consolidation runs at most once per
+ * throttle window. SET NX EX is atomic, so concurrent turns can't both win.
+ */
+async function acquireConsolidateLock(userId: string): Promise<boolean> {
+  const key = `${MEMORY_NAME}:consolidate_lock:${userId}`;
+  const res = await valkey.set(key, "1", "EX", CONSOLIDATE_THROTTLE_SECONDS, "NX");
+  return res === "OK";
+}
+
+/**
+ * Compress this user's old memories into a summary, but no more than once per
+ * throttle window. Returns null when the throttle lock is held (consolidation
+ * skipped this turn). `summarize` turns a batch of items into one summary line.
+ */
+export async function maybeConsolidate(
+  userId: string,
+  summarize: ConsolidationSummarizer,
+): Promise<ConsolidateResult | null> {
+  const acquired = await acquireConsolidateLock(userId);
+  if (!acquired) {
+    return null;
+  }
+  await ensureMemoryIndex();
+  return memoryStore.consolidate({
+    namespace: userId,
+    olderThanSeconds: CONSOLIDATE_AFTER_SECONDS,
+    summarize,
+    deleteSources: true,
+    summaryImportance: 0.6,
+    tags: ["summary"],
+  });
 }

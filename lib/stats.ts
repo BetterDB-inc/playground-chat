@@ -25,6 +25,21 @@ const K = {
   hitLatencySum: "playground:stats:hit_latency_ms_sum",
 };
 
+/**
+ * Context-layer counters (memory recall + retrieval) tracked the same way as the
+ * cache counters above: integer rolling sums in Valkey, averaged on read. They
+ * feed the "Retrieval & memory store" section of the metrics panel.
+ */
+const CTX = {
+  recallTotal: "playground:mem:recall_total",
+  recallHits: "playground:mem:recall_hits",
+  recallLatencySum: "playground:mem:recall_latency_ms_sum",
+  consolidations: "playground:mem:consolidations",
+  queryTotal: "playground:rag:query_total",
+  queryLatencySum: "playground:rag:query_latency_ms_sum",
+  docsRetrievedSum: "playground:rag:docs_retrieved_sum",
+};
+
 export async function recordTurn(opts: {
   semanticHit: boolean;
   savedUsd: number;
@@ -51,6 +66,79 @@ export async function recordTurn(opts: {
     }
   }
   await p.exec();
+}
+
+/** Record one memory recall: whether it returned anything, and how long it took. */
+export async function recordMemoryRecall(opts: { hit: boolean; latencyMs: number }): Promise<void> {
+  const p = valkey.pipeline();
+  p.incr(CTX.recallTotal);
+  if (opts.hit) {
+    p.incr(CTX.recallHits);
+  }
+  p.incrby(CTX.recallLatencySum, Math.round(opts.latencyMs));
+  await p.exec();
+}
+
+/** Record a consolidation pass that compressed `created` old memories into summaries. */
+export async function recordConsolidation(created: number): Promise<void> {
+  if (created <= 0) {
+    return;
+  }
+  await valkey.incrby(CTX.consolidations, created);
+}
+
+/** Record one retrieval query: how long the vector search took and how many docs it returned. */
+export async function recordRetrievalQuery(opts: {
+  latencyMs: number;
+  docs: number;
+}): Promise<void> {
+  const p = valkey.pipeline();
+  p.incr(CTX.queryTotal);
+  p.incrby(CTX.queryLatencySum, Math.round(opts.latencyMs));
+  p.incrby(CTX.docsRetrievedSum, opts.docs);
+  await p.exec();
+}
+
+export interface ContextCounters {
+  recallTotal: number;
+  recallHits: number;
+  recallHitRate: number;
+  avgRecallLatencyMs: number;
+  consolidations: number;
+  queryTotal: number;
+  avgQueryLatencyMs: number;
+  avgDocsPerTurn: number;
+}
+
+/** All-time memory-recall + retrieval aggregates for the metrics panel. */
+export async function readContextCounters(): Promise<ContextCounters> {
+  const [rtRaw, rhRaw, rlsRaw, consRaw, qtRaw, qlsRaw, drsRaw] = await Promise.all([
+    valkey.get(CTX.recallTotal),
+    valkey.get(CTX.recallHits),
+    valkey.get(CTX.recallLatencySum),
+    valkey.get(CTX.consolidations),
+    valkey.get(CTX.queryTotal),
+    valkey.get(CTX.queryLatencySum),
+    valkey.get(CTX.docsRetrievedSum),
+  ]);
+
+  const recallTotal = Number(rtRaw ?? 0);
+  const recallHits = Number(rhRaw ?? 0);
+  const recallLatencySum = Number(rlsRaw ?? 0);
+  const queryTotal = Number(qtRaw ?? 0);
+  const queryLatencySum = Number(qlsRaw ?? 0);
+  const docsRetrievedSum = Number(drsRaw ?? 0);
+
+  return {
+    recallTotal,
+    recallHits,
+    recallHitRate: recallTotal > 0 ? recallHits / recallTotal : 0,
+    avgRecallLatencyMs: recallTotal > 0 ? recallLatencySum / recallTotal : 0,
+    consolidations: Number(consRaw ?? 0),
+    queryTotal,
+    avgQueryLatencyMs: queryTotal > 0 ? queryLatencySum / queryTotal : 0,
+    avgDocsPerTurn: queryTotal > 0 ? docsRetrievedSum / queryTotal : 0,
+  };
 }
 
 export async function readStats(): Promise<GlobalStats> {

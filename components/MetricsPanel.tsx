@@ -34,7 +34,7 @@ export function MetricsPanel({ turns }: Props) {
         </section>
 
         <section>
-          <SectionLabel>Retrieval &amp; memory store</SectionLabel>
+          <SectionLabel>Context layer</SectionLabel>
           <ContextStats />
         </section>
 

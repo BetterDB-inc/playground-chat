@@ -11,6 +11,7 @@ import {
   type CommandSource,
 } from "./rag";
 import { estimateEmbedCost, approximateTokens } from "./pricing";
+import { recordRetrievalQuery } from "./stats";
 import type { ToolMeta } from "./types";
 
 /**
@@ -103,7 +104,13 @@ export const tools = {
         async () => {
           const src: DocSource | undefined =
             source && source !== "all" ? (source as DocSource) : undefined;
+          const queryStart = Date.now();
           const results = await vectorSearch(query, src, limit);
+          // Best-effort: a metrics write must never fail the search.
+          void recordRetrievalQuery({
+            latencyMs: Date.now() - queryStart,
+            docs: results.length,
+          }).catch(() => {});
           return results.map(projectDoc);
         },
         { costEstimateUsd: vectorSearchCost(query) },

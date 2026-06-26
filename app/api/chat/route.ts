@@ -14,7 +14,7 @@ import { tools } from "@/lib/tools";
 import { rateLimit, reserveBudget, settleBudget } from "@/lib/rate-limit";
 import { validateInputSync, moderateInput } from "@/lib/guardrails";
 import { logTurn } from "@/lib/logger";
-import { recordTurn } from "@/lib/stats";
+import { recordTurn, recordMemoryRecall, recordConsolidation } from "@/lib/stats";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 import { validateEnv } from "@/lib/env";
 import { detectClientIp } from "@/lib/client-ip";
@@ -23,7 +23,7 @@ import { estimateLlmCost, approximateTokens } from "@/lib/pricing";
 import { captureChatTurn, flushAnalytics } from "@/lib/analytics";
 import { after } from "next/server";
 import { getOrCreateUserId } from "@/lib/session";
-import { recallMemories, rememberFact } from "@/lib/memory";
+import { recallMemories, rememberFact, maybeConsolidate } from "@/lib/memory";
 import { extractFacts } from "@/lib/memory-extract";
 import type { ToolMeta, TurnMetrics } from "@/lib/types";
 
@@ -189,7 +189,14 @@ export async function POST(req: Request) {
       const cachedText = agentLlmResult.response;
 
       await Promise.all([
-        logTurn({ ip, q: persistedQuery, semantic: { hit: false }, toolHits: [], costUsd: 0, llmExactHit: true }),
+        logTurn({
+          ip,
+          q: persistedQuery,
+          semantic: { hit: false },
+          toolHits: [],
+          costUsd: 0,
+          llmExactHit: true,
+        }),
         // Count as a hit: agent cache avoided the LLM call, latency belongs in
         // hitLatencySum not missLatencySum so avgMissLatencyMs stays accurate.
         recordTurn({ semanticHit: true, savedUsd: 0, totalLatencyMs: Date.now() - turnStart }),
@@ -402,7 +409,12 @@ export async function POST(req: Request) {
   // Best-effort: a recall failure must never break the chat.
   let system = SYSTEM_PROMPT;
   try {
+    const recallStart = Date.now();
     const memories = await recallMemories(lastUserText, userId);
+    void recordMemoryRecall({
+      hit: memories.length > 0,
+      latencyMs: Date.now() - recallStart,
+    }).catch(() => {});
     if (memories.length > 0) {
       const lines = memories.map((m) => `- ${m.item.content}`).join("\n");
       system = `${SYSTEM_PROMPT}\n\n## What you remember about this user\n${lines}`;
@@ -515,6 +527,32 @@ export async function POST(req: Request) {
           console.warn("memory extraction failed:", e);
         }
       });
+
+      // Periodically compress this visitor's old memories into a summary. The
+      // throttle lock inside maybeConsolidate keeps the summarize LLM call from
+      // firing every turn; deferred + best-effort so it never affects the reply.
+      after(async () => {
+        try {
+          const result = await maybeConsolidate(userId, async (items) => {
+            const joined = items.map((m) => `- ${m.content}`).join("\n");
+            const { text: summary } = await generateText({
+              model: openai(
+                process.env.CONSOLIDATE_MODEL ?? process.env.EXTRACT_MODEL ?? "gpt-4o-mini",
+              ),
+              system:
+                "Summarize these durable facts about a single user into one concise paragraph. " +
+                "Preserve specifics (stack, preferences, goals); drop redundancy. Output only the summary.",
+              prompt: joined,
+            });
+            return summary.trim();
+          });
+          if (result) {
+            await recordConsolidation(result.created.length);
+          }
+        } catch (e) {
+          console.warn("memory consolidation failed:", e);
+        }
+      });
     },
   });
 
@@ -533,8 +571,7 @@ export async function POST(req: Request) {
           // deltaToThreshold <= 0 means the score cleared the cosine threshold
           // but the judge said no — distinct from a plain cosine miss.
           judgeRejected:
-            semanticHit.nearestMiss !== undefined &&
-            semanticHit.nearestMiss.deltaToThreshold <= 0,
+            semanticHit.nearestMiss !== undefined && semanticHit.nearestMiss.deltaToThreshold <= 0,
         },
         toolHits: toolMetas,
         promptTokens: inputTokens,
