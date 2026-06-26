@@ -3,6 +3,7 @@
 import { GlobalStats } from "./GlobalStats";
 import { TurnMetrics } from "./TurnMetrics";
 import { MemoryPanel } from "./memory/MemoryPanel";
+import { ContextStats } from "./stats/ContextStats";
 import type { TurnMetrics as TurnMetricsType } from "@/lib/types";
 
 interface Props {
@@ -30,6 +31,11 @@ export function MetricsPanel({ turns }: Props) {
         <section>
           <SectionLabel>This session</SectionLabel>
           <TurnMetrics turns={turns} />
+        </section>
+
+        <section>
+          <SectionLabel>Retrieval &amp; memory store</SectionLabel>
+          <ContextStats />
         </section>
 
         <section>
