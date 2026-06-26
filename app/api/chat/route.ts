@@ -111,25 +111,26 @@ async function postTurnMemory(
     approximateTokens(`${userText}\n${assistantText}`) + 400,
     256,
   );
+  // Gate extraction on the budget, but skip ONLY extraction when it's spent —
+  // consolidation below makes its own separate reservation, so it must still get
+  // a chance to run (and will no-op if it's also over budget).
   const reserve = await reserveBudget(estCost);
-  if (!reserve.ok) {
-    return;
-  }
-
-  try {
-    const { facts, usage } = await extractFacts(openai(extractModel), userText, assistantText);
-    await settleBudget(
-      estCost,
-      estimateLlmCost(extractModel, usage.inputTokens, usage.outputTokens),
-    );
-    for (const fact of facts) {
-      await rememberFact(fact.content, userId, {
-        importance: fact.importance,
-        tags: fact.tags,
-      });
+  if (reserve.ok) {
+    try {
+      const { facts, usage } = await extractFacts(openai(extractModel), userText, assistantText);
+      await settleBudget(
+        estCost,
+        estimateLlmCost(extractModel, usage.inputTokens, usage.outputTokens),
+      );
+      for (const fact of facts) {
+        await rememberFact(fact.content, userId, {
+          importance: fact.importance,
+          tags: fact.tags,
+        });
+      }
+    } catch (e) {
+      console.warn("memory extraction failed:", e);
     }
-  } catch (e) {
-    console.warn("memory extraction failed:", e);
   }
 
   const consolidateModel = process.env.CONSOLIDATE_MODEL ?? extractModel;
