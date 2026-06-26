@@ -51,8 +51,12 @@ async function main() {
   }
   console.log(`Loaded ${docs.length} docs.`);
 
-  // Idempotent: creates the FT vector index if absent. Existing docs are
-  // overwritten by id on re-ingest.
+  // Full rebuild: drop the index and clear existing doc hashes first, so docs
+  // removed from the JSONL (or renamed ids) don't linger. Dropping the index
+  // alone isn't enough — valkey-search re-indexes any hash under the key
+  // prefix, so the stale hashes have to go too.
+  await retriever.dropIndex().catch(() => undefined);
+  await clearDocKeys();
   await retriever.createIndex();
 
   for (let i = 0; i < docs.length; i += BATCH_SIZE) {
@@ -77,6 +81,28 @@ async function main() {
 }
 
 /**
+ * Delete every existing doc hash under the retriever's key prefix
+ * (`${DOCS_INDEX}:`) so a full re-ingest starts clean. SCAN + batched DEL so a
+ * large corpus doesn't block on one huge command.
+ */
+async function clearDocKeys(): Promise<void> {
+  const pattern = `${DOCS_INDEX}:*`;
+  let cursor = "0";
+  let cleared = 0;
+  do {
+    const [next, keys] = await valkey.scan(cursor, "MATCH", pattern, "COUNT", 500);
+    cursor = next;
+    if (keys.length > 0) {
+      await valkey.del(...keys);
+      cleared += keys.length;
+    }
+  } while (cursor !== "0");
+  if (cleared > 0) {
+    console.log(`Cleared ${cleared} stale doc key(s).`);
+  }
+}
+
+/**
  * Block until valkey-search finishes backfilling the vector index. Without
  * this the script can exit mid-backfill, so queries run right after ingest
  * return partial or empty results.
@@ -98,7 +124,11 @@ async function waitForBackfill(timeoutMs = 60_000, intervalMs = 1_000): Promise<
   console.warn("Backfill did not reach 100% before timeout; continuing anyway.");
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// The shared valkey singleton keeps the event loop alive even after quit() in
+// some environments, so exit explicitly rather than letting the script hang.
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
