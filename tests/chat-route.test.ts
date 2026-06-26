@@ -146,4 +146,26 @@ describe("chat route — recall → inject → remember", () => {
 
     expect(mocks.capturedSystem).toBe("BASE PROMPT");
   });
+
+  it("does NOT cache a memory-personalized reply (would leak across visitors)", async () => {
+    const { agentCache, semanticCache } = await import("@/lib/cache");
+    const { POST } = await import("@/app/api/chat/route");
+    await POST(chatRequest("tell me about valkey"));
+    await settle();
+
+    expect(mocks.capturedSystem).toContain("prefers dark mode");
+    expect(agentCache.llm.store).not.toHaveBeenCalled();
+    expect(semanticCache.store).not.toHaveBeenCalled();
+  });
+
+  it("caches a generic reply when no memory personalized the turn", async () => {
+    mocks.recallMemories.mockResolvedValue([]);
+    const { agentCache, semanticCache } = await import("@/lib/cache");
+    const { POST } = await import("@/app/api/chat/route");
+    await POST(chatRequest("tell me about valkey"));
+    await settle();
+
+    expect(agentCache.llm.store).toHaveBeenCalled();
+    expect(semanticCache.store).toHaveBeenCalled();
+  });
 });

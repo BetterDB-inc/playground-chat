@@ -492,6 +492,11 @@ export async function POST(req: Request) {
   // per-user memory into the cache-check params would break cross-user sharing).
   // Best-effort: a recall failure must never break the chat.
   let system = SYSTEM_PROMPT;
+  // True once this turn's reply is shaped by per-visitor memory. Such a reply is
+  // user-specific and must NOT be written to the shared agent/semantic caches —
+  // those are keyed on the base prompt/query (no memory block), so caching it
+  // would serve one visitor's memory-shaped answer to another on the same query.
+  let personalized = false;
   try {
     const recallStart = Date.now();
     const memories = await recallMemories(lastUserText, userId);
@@ -502,6 +507,7 @@ export async function POST(req: Request) {
     if (memories.length > 0) {
       const lines = memories.map((m) => `- ${m.item.content}`).join("\n");
       system = `${SYSTEM_PROMPT}\n\n## What you remember about this user\n${lines}`;
+      personalized = true;
     }
   } catch (e) {
     console.warn("memory recall failed:", e);
@@ -530,23 +536,32 @@ export async function POST(req: Request) {
       // True up the budget reservation - we may have estimated low.
       void settleBudget(estimatedCost, actualCost);
 
-      // Store in both caches. llmCacheParams was built before the LLM call so
-      // the hash is identical to the one used in the upfront check above.
-      const agentLlmStorePromise = agentCache.llm
-        .store(llmCacheParams, text, { tokens: { input: inputTokens, output: outputTokens } })
-        .catch((e) => console.warn("agent cache llm store failed:", e));
+      // Store in both caches — but only when the reply wasn't personalized by
+      // this visitor's memory. A memory-shaped answer is user-specific, and both
+      // cache keys omit the memory block (llmCacheParams uses the base
+      // SYSTEM_PROMPT; the semantic cache keys on the bare query), so caching it
+      // would leak one visitor's answer to the next on the same question.
+      // llmCacheParams was built before the LLM call so the hash is identical to
+      // the one used in the upfront check above.
+      const agentLlmStorePromise = personalized
+        ? Promise.resolve()
+        : agentCache.llm
+            .store(llmCacheParams, text, { tokens: { input: inputTokens, output: outputTokens } })
+            .catch((e) => console.warn("agent cache llm store failed:", e));
 
       // Store with model + tokens so subsequent semantic-cache hits can
       // report an accurate `costSaved`. This is the key change vs. before:
       // the cache itself becomes the source of truth for savings.
-      const semanticStorePromise = semanticCache
-        .store(lastUserText, text, {
-          model: env.llmModel,
-          inputTokens,
-          outputTokens,
-          category: queryCategory,
-        })
-        .catch((e) => console.warn("semantic cache store failed:", e));
+      const semanticStorePromise = personalized
+        ? Promise.resolve()
+        : semanticCache
+            .store(lastUserText, text, {
+              model: env.llmModel,
+              inputTokens,
+              outputTokens,
+              category: queryCategory,
+            })
+            .catch((e) => console.warn("semantic cache store failed:", e));
 
       await Promise.all([
         agentLlmStorePromise,
