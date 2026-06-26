@@ -500,7 +500,10 @@ export async function POST(req: Request) {
   let personalized = false;
   try {
     const recallStart = Date.now();
-    const memories = await recallMemories(lastUserText, userId);
+    // Embed the scrubbed query (same text post-turn extraction/persistence use),
+    // so credential-shaped content never reaches the embedding API and recall
+    // stays consistent with what gets stored.
+    const memories = await recallMemories(persistedQuery, userId);
     void recordMemoryRecall({
       hit: memories.length > 0,
       latencyMs: Date.now() - recallStart,
