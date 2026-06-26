@@ -12,16 +12,11 @@ import type { NextConfig } from "next";
  */
 const nextConfig: NextConfig = {
   serverExternalPackages: ["iovalkey"],
-  transpilePackages: ["@betterdb/agent-memory", "@betterdb/retrieval"],
   reactStrictMode: true,
   poweredByHeader: false,
   experimental: {
     // Improves first-paint by avoiding extra hydration work for static parts.
     optimizePackageImports: ["react-markdown", "remark-gfm"],
-    // Allows resolving the `link:`-ed @betterdb/agent-memory and
-    // @betterdb/retrieval packages, which live outside the app root during
-    // local development. No effect once they resolve from node_modules.
-    externalDir: true,
   },
 };
 
