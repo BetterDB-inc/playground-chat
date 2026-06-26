@@ -18,11 +18,11 @@ importers:
         specifier: ^0.6.0
         version: 0.6.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
       '@betterdb/agent-memory':
-        specifier: ^0.2.1
-        version: 0.2.1(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)
+        specifier: ^0.3.0
+        version: 0.3.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)
       '@betterdb/retrieval':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.3.0
+        version: 0.3.0
       '@betterdb/semantic-cache':
         specifier: ^0.5.0
         version: 0.5.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
@@ -252,12 +252,12 @@ packages:
       openai:
         optional: true
 
-  '@betterdb/agent-memory@0.2.1':
-    resolution: {integrity: sha512-wmW4brNaMvVKNg8Vm/tkQKe4kW0Y5YJcyZiFSN+kAVU//WDjIo12N2JSQBdRo/jXTbB90lcvk6JOj6rD4VJrtQ==}
+  '@betterdb/agent-memory@0.3.0':
+    resolution: {integrity: sha512-Hi8lQ/RJJLtibk9jDgNLA9zJdFLFP83phPIbY2dsBgxT0KnmVPQI51qm4T1s7MfH/h4tpJIC0jp+YffcXnLFXg==}
     engines: {node: '>=20.0.0'}
 
-  '@betterdb/retrieval@0.1.0':
-    resolution: {integrity: sha512-A7PsXblLUdXCMTLUWXGrvv48dZzxMJX4qTqc2SWcdm+eOO54B7NF3if1Yvxc0sW3bYf0k8iORNvlQltNBXXpOA==}
+  '@betterdb/retrieval@0.3.0':
+    resolution: {integrity: sha512-hEvY3DHoJhwiuB3nmhCkpVlB9HVAGwWZJ7wrSbtVf68AlcucVSUBZl4YI1sU+Jp4GivmIK6nnnHJoxxpKQu5wg==}
     engines: {node: '>=20.0.0'}
 
   '@betterdb/semantic-cache@0.5.0':
@@ -3400,7 +3400,7 @@ snapshots:
     transitivePeerDependencies:
       - rxjs
 
-  '@betterdb/agent-memory@0.2.1(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)':
+  '@betterdb/agent-memory@0.3.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)':
     dependencies:
       '@betterdb/agent-cache': 0.8.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)
       '@betterdb/valkey-search-kit': 0.1.0
@@ -3417,10 +3417,13 @@ snapshots:
       - openai
       - rxjs
 
-  '@betterdb/retrieval@0.1.0':
+  '@betterdb/retrieval@0.3.0':
     dependencies:
       '@betterdb/valkey-search-kit': 0.1.0
+      posthog-node: 5.29.2
       prom-client: 15.1.3
+    transitivePeerDependencies:
+      - rxjs
 
   '@betterdb/semantic-cache@0.5.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)':
     dependencies:
