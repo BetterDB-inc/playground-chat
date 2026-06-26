@@ -2,6 +2,7 @@
 
 import { GlobalStats } from "./GlobalStats";
 import { TurnMetrics } from "./TurnMetrics";
+import { MemoryPanel } from "./memory/MemoryPanel";
 import type { TurnMetrics as TurnMetricsType } from "@/lib/types";
 
 interface Props {
@@ -17,7 +18,7 @@ export function MetricsPanel({ turns }: Props) {
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
         </span>
-        <h2 className="text-sm font-semibold text-foreground tracking-tight">Cache Metrics</h2>
+        <h2 className="text-sm font-semibold text-foreground tracking-tight">Cache &amp; Memory</h2>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
@@ -29,6 +30,11 @@ export function MetricsPanel({ turns }: Props) {
         <section>
           <SectionLabel>This session</SectionLabel>
           <TurnMetrics turns={turns} />
+        </section>
+
+        <section>
+          <SectionLabel>Memory</SectionLabel>
+          <MemoryPanel refreshKey={turns.length} />
         </section>
       </div>
 
