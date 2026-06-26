@@ -126,3 +126,14 @@ export function requireInstanceId(): string {
   if (!id) throw new Error("BETTERDB_INSTANCE_ID is not set");
   return id;
 }
+
+/**
+ * Whether a Monitor is wired up (URL + token + instance). Used to gate the
+ * governed-forget UI: without a Monitor, the Forget button degrades to a
+ * disabled state instead of erroring.
+ */
+export function isMonitorConfigured(): boolean {
+  return Boolean(
+    process.env.BETTERDB_URL && process.env.BETTERDB_TOKEN && process.env.BETTERDB_INSTANCE_ID,
+  );
+}

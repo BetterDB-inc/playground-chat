@@ -11,7 +11,7 @@ import { embedText } from "./embeddings";
  * session-cookie id — see lib/session.ts), so a returning visitor gets back
  * what the assistant learned about them, with no login.
  */
-const MEMORY_NAME = process.env.MEMORY_NAME ?? "playground_mem";
+export const MEMORY_NAME = process.env.MEMORY_NAME ?? "playground_mem";
 const DEFAULT_RECALL_K = 5;
 
 export const memoryStore = new MemoryStore({
