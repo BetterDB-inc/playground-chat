@@ -11,11 +11,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mocks = vi.hoisted(() => ({
   capturedSystem: "",
   onFinishDone: Promise.resolve() as Promise<unknown>,
+  afterPromises: [] as Promise<unknown>[],
   recallMemories: vi.fn(),
   rememberFact: vi.fn(),
   maybeConsolidate: vi.fn(),
   extractFacts: vi.fn(),
 }));
+
+/** Await onFinish plus every deferred after() callback it scheduled. */
+async function settle(): Promise<void> {
+  await mocks.onFinishDone;
+  await Promise.all(mocks.afterPromises);
+}
 
 vi.mock("ai", () => ({
   stepCountIs: () => true,
@@ -75,7 +82,11 @@ vi.mock("@/lib/analytics", () => ({
   captureChatTurn: vi.fn(async () => undefined),
   flushAnalytics: vi.fn(async () => undefined),
 }));
-vi.mock("next/server", () => ({ after: (fn: () => unknown) => void fn() }));
+vi.mock("next/server", () => ({
+  after: (fn: () => unknown) => {
+    mocks.afterPromises.push(Promise.resolve().then(fn));
+  },
+}));
 vi.mock("@/lib/session", () => ({
   getOrCreateUserId: () => ({ userId: "user-1", setCookie: undefined }),
 }));
@@ -95,6 +106,7 @@ function chatRequest(text: string): Request {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.afterPromises = [];
   mocks.recallMemories.mockResolvedValue([{ item: { content: "prefers dark mode" } }]);
   mocks.rememberFact.mockResolvedValue("mem-id");
   mocks.maybeConsolidate.mockResolvedValue(null);
@@ -116,7 +128,7 @@ describe("chat route — recall → inject → remember", () => {
   it("remembers durable facts extracted from the turn", async () => {
     const { POST } = await import("@/app/api/chat/route");
     await POST(chatRequest("tell me about valkey"));
-    await mocks.onFinishDone;
+    await settle();
 
     expect(mocks.extractFacts).toHaveBeenCalled();
     expect(mocks.rememberFact).toHaveBeenCalledWith(

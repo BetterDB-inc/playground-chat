@@ -99,12 +99,22 @@ async function postTurnMemory(
   userText: string,
   assistantText: string,
 ): Promise<void> {
+  // These extraction/consolidation calls hit OpenAI, so book them against the
+  // same daily USD kill-switch that gates the main LLM path. If the budget is
+  // spent, skip the learning this turn rather than spend past the cap.
+  const extractModel = process.env.EXTRACT_MODEL ?? "gpt-4o-mini";
+  const estCost = estimateLlmCost(
+    extractModel,
+    approximateTokens(`${userText}\n${assistantText}`),
+    256,
+  );
+  const reserve = await reserveBudget(estCost);
+  if (!reserve.ok) {
+    return;
+  }
+
   try {
-    const facts = await extractFacts(
-      openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
-      userText,
-      assistantText,
-    );
+    const facts = await extractFacts(openai(extractModel), userText, assistantText);
     for (const fact of facts) {
       await rememberFact(fact.content, userId, {
         importance: fact.importance,
