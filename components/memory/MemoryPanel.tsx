@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MemoryItemCard, type MemoryItemView } from "./MemoryItemCard";
 
 interface MemoryListResult {
@@ -10,6 +10,12 @@ interface MemoryListResult {
 }
 
 const POLL_INTERVAL_MS = 15_000;
+
+// A completed turn writes durable facts in a deferred after() job (an extraction
+// LLM call), so they aren't stored the instant the client turn finishes. Refetch
+// immediately AND a few times shortly after so a new fact appears within seconds
+// instead of waiting for the next 15s poll.
+const POST_TURN_REFETCH_DELAYS_MS = [1_500, 4_000, 8_000];
 
 /**
  * Lists what the assistant remembers about this visitor (via /api/memory →
@@ -51,8 +57,17 @@ export function MemoryPanel({ refreshKey }: { refreshKey?: number }) {
     }
   }, []);
 
+  const firstRun = useRef(true);
   useEffect(() => {
     void load();
+    // On the initial mount the immediate load is enough; only stagger extra
+    // refetches after an actual turn completion, to outlast the deferred write.
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    const timers = POST_TURN_REFETCH_DELAYS_MS.map((ms) => setTimeout(() => void load(), ms));
+    return () => timers.forEach(clearTimeout);
   }, [load, refreshKey]);
 
   useEffect(() => {
