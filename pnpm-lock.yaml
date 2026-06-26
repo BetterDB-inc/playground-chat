@@ -20,6 +20,9 @@ importers:
       '@betterdb/agent-memory':
         specifier: link:../BetterDb/packages/agent-memory
         version: link:../BetterDb/packages/agent-memory
+      '@betterdb/retrieval':
+        specifier: link:../BetterDb/packages/retrieval
+        version: link:../BetterDb/packages/retrieval
       '@betterdb/semantic-cache':
         specifier: ^0.5.0
         version: 0.5.0(ai@6.0.168(zod@3.25.76))(iovalkey@0.3.3)(posthog-node@5.29.2)
