@@ -85,7 +85,11 @@ async function waitForBackfill(timeoutMs = 60_000, intervalMs = 1_000): Promise<
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const health = await retriever.health().catch(() => null);
-    if (health !== null && health.percentIndexed >= 100) {
+    // `health().percentIndexed` is already normalized to a 0-100 scale by the
+    // SDK's parsePercentIndexed (it scales a 0-1 fraction up), so 100 means
+    // fully indexed regardless of whether valkey-search reports a fraction or a
+    // percent. Require numDocs > 0 so an empty index can't read as complete.
+    if (health !== null && health.numDocs > 0 && health.percentIndexed >= 100) {
       console.log(`Index backfilled: ${health.numDocs} docs.`);
       return;
     }

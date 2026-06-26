@@ -26,15 +26,28 @@ export type CommandSource = Exclude<DocSource, "betterdb">;
 
 /** Map a retrieval QueryHit (doc body = `text`, metadata = `fields`) to DocResult. */
 function hitToDoc(hit: QueryHit): DocResult {
+  const title = hit.fields.title ?? "";
   return {
     id: hit.id,
-    title: hit.fields.title ?? "",
-    content: hit.text,
+    title,
+    // Ingest embeds `${title}\n\n${body}` so titles influence the vector; strip
+    // that prefix back off here so `content` is body-only and the title isn't
+    // duplicated in RAG context / cached tool payloads.
+    content: stripTitlePrefix(hit.text, title),
     source: hit.fields.source ?? "",
     kind: hit.fields.kind ?? "",
     url: hit.fields.url ?? "",
     score: hit.score,
   };
+}
+
+/** Remove a leading `${title}\n\n` the ingest prepended, if present. */
+function stripTitlePrefix(text: string, title: string): string {
+  if (title === "") {
+    return text;
+  }
+  const prefix = `${title}\n\n`;
+  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
 }
 
 export async function vectorSearch(

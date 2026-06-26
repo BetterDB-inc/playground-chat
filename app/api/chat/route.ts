@@ -87,20 +87,24 @@ async function rerankByKeywordOverlap(
 }
 
 /**
- * Learn durable facts about the visitor from a completed turn and remember
- * them. Runs on every turn — cache hits included — so a fact shared on a cached
- * turn is still stored. Best-effort: a failure never affects the response. It
- * does not change the reply, so it's safe on cache paths (unlike recall, which
- * would break cross-user cache sharing).
+ * Post-turn memory maintenance: extract + remember durable facts, then run the
+ * throttled consolidation pass. Runs on every turn — cache hits included — so a
+ * fact shared on a cached turn is still stored and old memories still get
+ * summarized. Best-effort and write-only: it never changes the reply, so it's
+ * safe on cache paths (unlike recall, which would break cross-user sharing).
  */
-async function learnFromTurn(
-  model: Parameters<typeof extractFacts>[0],
+async function postTurnMemory(
+  openai: ReturnType<typeof createOpenAI>,
   userId: string,
   userText: string,
   assistantText: string,
 ): Promise<void> {
   try {
-    const facts = await extractFacts(model, userText, assistantText);
+    const facts = await extractFacts(
+      openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
+      userText,
+      assistantText,
+    );
     for (const fact of facts) {
       await rememberFact(fact.content, userId, {
         importance: fact.importance,
@@ -109,6 +113,25 @@ async function learnFromTurn(
     }
   } catch (e) {
     console.warn("memory extraction failed:", e);
+  }
+
+  try {
+    const result = await maybeConsolidate(userId, async (items) => {
+      const joined = items.map((m) => `- ${m.content}`).join("\n");
+      const { text: summary } = await generateText({
+        model: openai(process.env.CONSOLIDATE_MODEL ?? process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
+        system:
+          "Summarize these durable facts about a single user into one concise paragraph. " +
+          "Preserve specifics (stack, preferences, goals); drop redundancy. Output only the summary.",
+        prompt: joined,
+      });
+      return summary.trim();
+    });
+    if (result) {
+      await recordConsolidation(result.created.length);
+    }
+  } catch (e) {
+    console.warn("memory consolidation failed:", e);
   }
 }
 
@@ -243,12 +266,7 @@ export async function POST(req: Request) {
           costUsd: 0,
           totalLatencyMs: Date.now() - turnStart,
         });
-        await learnFromTurn(
-          openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
-          userId,
-          lastUserText,
-          cachedText,
-        );
+        await postTurnMemory(openai, userId, lastUserText, cachedText);
         await flushAnalytics();
       });
 
@@ -377,12 +395,7 @@ export async function POST(req: Request) {
         costUsd: 0,
         totalLatencyMs: Date.now() - turnStart,
       });
-      await learnFromTurn(
-        openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
-        userId,
-        lastUserText,
-        text,
-      );
+      await postTurnMemory(openai, userId, lastUserText, text);
       await flushAnalytics();
     });
 
@@ -550,42 +563,9 @@ export async function POST(req: Request) {
         await flushAnalytics();
       });
 
-      // Learn durable facts about the user and remember them for next time.
-      // Deferred so the extraction LLM call never adds latency to the stream.
-      after(() =>
-        learnFromTurn(
-          openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
-          userId,
-          lastUserText,
-          text,
-        ),
-      );
-
-      // Periodically compress this visitor's old memories into a summary. The
-      // throttle lock inside maybeConsolidate keeps the summarize LLM call from
-      // firing every turn; deferred + best-effort so it never affects the reply.
-      after(async () => {
-        try {
-          const result = await maybeConsolidate(userId, async (items) => {
-            const joined = items.map((m) => `- ${m.content}`).join("\n");
-            const { text: summary } = await generateText({
-              model: openai(
-                process.env.CONSOLIDATE_MODEL ?? process.env.EXTRACT_MODEL ?? "gpt-4o-mini",
-              ),
-              system:
-                "Summarize these durable facts about a single user into one concise paragraph. " +
-                "Preserve specifics (stack, preferences, goals); drop redundancy. Output only the summary.",
-              prompt: joined,
-            });
-            return summary.trim();
-          });
-          if (result) {
-            await recordConsolidation(result.created.length);
-          }
-        } catch (e) {
-          console.warn("memory consolidation failed:", e);
-        }
-      });
+      // Learn facts + run the throttled consolidation pass. Deferred so neither
+      // LLM call adds latency to the stream; best-effort so it never breaks it.
+      after(() => postTurnMemory(openai, userId, lastUserText, text));
     },
   });
 

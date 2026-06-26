@@ -94,13 +94,22 @@ export async function userOwnsMemory(userId: string, id: string): Promise<boolea
   return item !== null && item.namespace === userId;
 }
 
+function consolidateLockKey(userId: string): string {
+  return `${MEMORY_NAME}:consolidate_lock:${userId}`;
+}
+
 /**
  * Acquire a short-lived per-user lock so consolidation runs at most once per
  * throttle window. SET NX EX is atomic, so concurrent turns can't both win.
  */
 async function acquireConsolidateLock(userId: string): Promise<boolean> {
-  const key = `${MEMORY_NAME}:consolidate_lock:${userId}`;
-  const res = await valkey.set(key, "1", "EX", CONSOLIDATE_THROTTLE_SECONDS, "NX");
+  const res = await valkey.set(
+    consolidateLockKey(userId),
+    "1",
+    "EX",
+    CONSOLIDATE_THROTTLE_SECONDS,
+    "NX",
+  );
   return res === "OK";
 }
 
@@ -108,6 +117,8 @@ async function acquireConsolidateLock(userId: string): Promise<boolean> {
  * Compress this user's old memories into a summary, but no more than once per
  * throttle window. Returns null when the throttle lock is held (consolidation
  * skipped this turn). `summarize` turns a batch of items into one summary line.
+ * If the pass throws, the lock is released so the next turn can retry rather
+ * than waiting out the full throttle window.
  */
 export async function maybeConsolidate(
   userId: string,
@@ -117,13 +128,18 @@ export async function maybeConsolidate(
   if (!acquired) {
     return null;
   }
-  await ensureMemoryIndex();
-  return memoryStore.consolidate({
-    namespace: userId,
-    olderThanSeconds: CONSOLIDATE_AFTER_SECONDS,
-    summarize,
-    deleteSources: true,
-    summaryImportance: 0.6,
-    tags: ["summary"],
-  });
+  try {
+    await ensureMemoryIndex();
+    return await memoryStore.consolidate({
+      namespace: userId,
+      olderThanSeconds: CONSOLIDATE_AFTER_SECONDS,
+      summarize,
+      deleteSources: true,
+      summaryImportance: 0.6,
+      tags: ["summary"],
+    });
+  } catch (e) {
+    await valkey.del(consolidateLockKey(userId)).catch(() => 0);
+    throw e;
+  }
 }

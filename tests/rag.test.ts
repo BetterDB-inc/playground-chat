@@ -44,6 +44,20 @@ describe("lib/rag (retrieval-backed)", () => {
     expect(query).toHaveBeenCalledWith({ text: "anything", k: 5, filter: undefined });
   });
 
+  it("vectorSearch strips the embedded title prefix from content", async () => {
+    query.mockResolvedValue([
+      {
+        id: "d2",
+        score: 0.1,
+        text: "FT.SEARCH\n\nFT.SEARCH runs a query against an index.",
+        fields: { title: "FT.SEARCH", source: "valkey", kind: "command", url: "u" },
+      },
+    ]);
+    const res = await vectorSearch("ft search", "valkey");
+    expect(res[0]?.content).toBe("FT.SEARCH runs a query against an index.");
+    expect(res[0]?.title).toBe("FT.SEARCH");
+  });
+
   it("getCommandByName returns the candidate whose title matches the command", async () => {
     query.mockResolvedValue([
       {
