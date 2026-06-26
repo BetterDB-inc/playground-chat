@@ -30,6 +30,7 @@
     "@ai-sdk/openai": "^3.0.53",
     "@ai-sdk/react": "^3.0.170",
     "@betterdb/agent-cache": "^0.6.0",
+    "@betterdb/agent-memory": "link:../BetterDb/packages/agent-memory",
     "@betterdb/semantic-cache": "^0.5.0",
     "@vercel/analytics": "^2.0.1",
     "ai": "^6.0.161",
