@@ -20,7 +20,11 @@ describe("lib/rag (retrieval-backed)", () => {
       },
     ]);
     const res = await vectorSearch("what is valkey", "valkey", 3);
-    expect(query).toHaveBeenCalledWith({ text: "what is valkey", k: 3, filter: { source: "valkey" } });
+    expect(query).toHaveBeenCalledWith({
+      text: "what is valkey",
+      k: 3,
+      filter: { source: "valkey" },
+    });
     expect(res).toEqual([
       {
         id: "d1",
@@ -40,18 +44,38 @@ describe("lib/rag (retrieval-backed)", () => {
     expect(query).toHaveBeenCalledWith({ text: "anything", k: 5, filter: undefined });
   });
 
-  it("getCommandByName normalizes the name and returns the top hit", async () => {
+  it("getCommandByName returns the candidate whose title matches the command", async () => {
     query.mockResolvedValue([
+      {
+        id: "near",
+        score: 0.04,
+        text: "FT.AGGREGATE groups results.",
+        fields: { title: "FT.AGGREGATE", source: "valkey", kind: "command", url: "u1" },
+      },
       {
         id: "c1",
         score: 0.05,
         text: "FT.SEARCH runs a query.",
-        fields: { title: "FT.SEARCH", source: "valkey", kind: "command", url: "u" },
+        fields: { title: "FT.SEARCH", source: "valkey", kind: "command", url: "u2" },
       },
     ]);
     const res = await getCommandByName("ft search", "valkey");
-    expect(query).toHaveBeenCalledWith({ text: "FT-SEARCH", k: 1, filter: { source: "valkey" } });
+    expect(query).toHaveBeenCalledWith({ text: "FT-SEARCH", k: 10, filter: { source: "valkey" } });
+    // Despite FT.AGGREGATE ranking higher by vector distance, the exact
+    // title match wins.
     expect(res?.content).toBe("FT.SEARCH runs a query.");
+  });
+
+  it("getCommandByName returns null when no candidate title matches", async () => {
+    query.mockResolvedValue([
+      {
+        id: "near",
+        score: 0.04,
+        text: "FT.AGGREGATE groups results.",
+        fields: { title: "FT.AGGREGATE", source: "valkey", kind: "command", url: "u1" },
+      },
+    ]);
+    expect(await getCommandByName("ft search", "valkey")).toBeNull();
   });
 
   it("getCommandByName returns null on no hits", async () => {
@@ -62,6 +86,10 @@ describe("lib/rag (retrieval-backed)", () => {
   it("getBetterDbInfo scopes to betterdb, top 3", async () => {
     query.mockResolvedValue([]);
     await getBetterDbInfo("vector search");
-    expect(query).toHaveBeenCalledWith({ text: "vector search", k: 3, filter: { source: "betterdb" } });
+    expect(query).toHaveBeenCalledWith({
+      text: "vector search",
+      k: 3,
+      filter: { source: "betterdb" },
+    });
   });
 });

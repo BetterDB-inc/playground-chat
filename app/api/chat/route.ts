@@ -86,6 +86,32 @@ async function rerankByKeywordOverlap(
   return best;
 }
 
+/**
+ * Learn durable facts about the visitor from a completed turn and remember
+ * them. Runs on every turn — cache hits included — so a fact shared on a cached
+ * turn is still stored. Best-effort: a failure never affects the response. It
+ * does not change the reply, so it's safe on cache paths (unlike recall, which
+ * would break cross-user cache sharing).
+ */
+async function learnFromTurn(
+  model: Parameters<typeof extractFacts>[0],
+  userId: string,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
+  try {
+    const facts = await extractFacts(model, userText, assistantText);
+    for (const fact of facts) {
+      await rememberFact(fact.content, userId, {
+        importance: fact.importance,
+        tags: fact.tags,
+      });
+    }
+  } catch (e) {
+    console.warn("memory extraction failed:", e);
+  }
+}
+
 export async function POST(req: Request) {
   // Fail fast if the deployment is misconfigured. validateEnv() is memoized
   // so this is essentially free after the first call.
@@ -131,15 +157,17 @@ export async function POST(req: Request) {
   const sessionHeaders = setCookie ? { "set-cookie": setCookie } : undefined;
 
   // Sync guardrails: cheap and synchronous (length, control chars, type).
+  // Carry sessionHeaders on every post-mint response (errors included) so a new
+  // visitor's cookie sticks on the first attempt, not only on a successful turn.
   const guardSync = validateInputSync(lastUserText);
   if (!guardSync.ok) {
-    return Response.json({ error: guardSync.reason }, { status: 400 });
+    return Response.json({ error: guardSync.reason }, { status: 400, headers: sessionHeaders });
   }
 
   // Async guardrails: OpenAI Moderation (no-op unless MODERATION_ENABLED).
   const guardAsync = await moderateInput(lastUserText);
   if (!guardAsync.ok) {
-    return Response.json({ error: guardAsync.reason }, { status: 400 });
+    return Response.json({ error: guardAsync.reason }, { status: 400, headers: sessionHeaders });
   }
 
   // Rate limit (atomic Lua, sliding window).
@@ -147,7 +175,10 @@ export async function POST(req: Request) {
   if (!rl.ok) {
     return Response.json(
       { error: "rate_limited", retryAfter: rl.retryAfter },
-      { status: 429, headers: { "Retry-After": String(rl.retryAfter ?? 60) } },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rl.retryAfter ?? 60), ...(sessionHeaders ?? {}) },
+      },
     );
   }
 
@@ -212,6 +243,12 @@ export async function POST(req: Request) {
           costUsd: 0,
           totalLatencyMs: Date.now() - turnStart,
         });
+        await learnFromTurn(
+          openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
+          userId,
+          lastUserText,
+          cachedText,
+        );
         await flushAnalytics();
       });
 
@@ -340,6 +377,12 @@ export async function POST(req: Request) {
         costUsd: 0,
         totalLatencyMs: Date.now() - turnStart,
       });
+      await learnFromTurn(
+        openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
+        userId,
+        lastUserText,
+        text,
+      );
       await flushAnalytics();
     });
 
@@ -399,7 +442,7 @@ export async function POST(req: Request) {
         spentUsd: reserve.spentUsd,
         budgetUsd: reserve.budgetUsd,
       },
-      { status: 429 },
+      { status: 429, headers: sessionHeaders },
     );
   }
 
@@ -508,25 +551,15 @@ export async function POST(req: Request) {
       });
 
       // Learn durable facts about the user and remember them for next time.
-      // Deferred so the extraction LLM call never adds latency to the stream;
-      // best-effort so a failure never breaks the turn.
-      after(async () => {
-        try {
-          const facts = await extractFacts(
-            openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
-            lastUserText,
-            text,
-          );
-          for (const fact of facts) {
-            await rememberFact(fact.content, userId, {
-              importance: fact.importance,
-              tags: fact.tags,
-            });
-          }
-        } catch (e) {
-          console.warn("memory extraction failed:", e);
-        }
-      });
+      // Deferred so the extraction LLM call never adds latency to the stream.
+      after(() =>
+        learnFromTurn(
+          openai(process.env.EXTRACT_MODEL ?? "gpt-4o-mini"),
+          userId,
+          lastUserText,
+          text,
+        ),
+      );
 
       // Periodically compress this visitor's old memories into a summary. The
       // throttle lock inside maybeConsolidate keeps the summarize LLM call from

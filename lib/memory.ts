@@ -42,10 +42,17 @@ export const memoryStore = new MemoryStore({
 
 let indexReady: Promise<void> | null = null;
 
-/** Idempotently create the FT vector index on first use (memoized). */
+/**
+ * Idempotently create the FT vector index on first use (memoized). If the
+ * bootstrap rejects (e.g. Valkey down at cold start) the cached promise is
+ * cleared so the next call retries instead of failing forever.
+ */
 export function ensureMemoryIndex(): Promise<void> {
   if (indexReady === null) {
-    indexReady = memoryStore.ensureIndex();
+    indexReady = memoryStore.ensureIndex().catch((e) => {
+      indexReady = null;
+      throw e;
+    });
   }
   return indexReady;
 }
@@ -75,6 +82,16 @@ export async function rememberFact(
 export async function listMemories(userId: string, limit = 50) {
   await ensureMemoryIndex();
   return memoryStore.list({ namespace: userId, limit });
+}
+
+/**
+ * True if `id` is a memory owned by `userId`. Used to authorize a governed
+ * forget so a visitor can't file a deletion proposal for someone else's fact.
+ */
+export async function userOwnsMemory(userId: string, id: string): Promise<boolean> {
+  await ensureMemoryIndex();
+  const item = await memoryStore.get(id);
+  return item !== null && item.namespace === userId;
 }
 
 /**

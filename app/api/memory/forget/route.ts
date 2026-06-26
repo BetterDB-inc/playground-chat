@@ -1,5 +1,5 @@
 import { readUserId } from "@/lib/session";
-import { MEMORY_NAME } from "@/lib/memory";
+import { MEMORY_NAME, userOwnsMemory } from "@/lib/memory";
 import { monitorPost, requireInstanceId, isMonitorConfigured } from "@/lib/monitor-client";
 
 export const runtime = "nodejs";
@@ -36,13 +36,22 @@ export async function POST(req: Request) {
     return Response.json({ error: "id is required" }, { status: 400 });
   }
 
+  // Authorize: only the owner may file a forget proposal for a memory. Without
+  // this, a client could submit any known id and drive a deletion workflow for
+  // another visitor's fact.
+  const owns = await userOwnsMemory(userId, id).catch(() => false);
+  if (!owns) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+
   try {
     const result = await monitorPost(
       `/mcp/instance/${requireInstanceId()}/memory-proposals/forget`,
       {
         memory_name: MEMORY_NAME,
         id,
-        reasoning: "Visitor requested removal of this memory from the playground chat Memory panel.",
+        reasoning:
+          "Visitor requested removal of this memory from the playground chat Memory panel.",
       },
     );
     return Response.json(result);

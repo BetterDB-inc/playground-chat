@@ -60,15 +60,38 @@ async function main() {
     await retriever.upsert(
       batch.map((d) => ({
         id: d.id,
-        text: d.content,
+        // Embed the title alongside the body so command names and headings
+        // influence the vector — title-driven queries (e.g. "FT.SEARCH")
+        // otherwise regress to body-only similarity.
+        text: `${d.title}\n\n${d.content}`,
         fields: { title: d.title, source: d.source, kind: d.kind, url: d.url },
       })),
     );
     console.log(`upserted ${Math.min(i + BATCH_SIZE, docs.length)}/${docs.length}`);
   }
 
+  await waitForBackfill();
+
   console.log("Done.");
   await valkey.quit();
+}
+
+/**
+ * Block until valkey-search finishes backfilling the vector index. Without
+ * this the script can exit mid-backfill, so queries run right after ingest
+ * return partial or empty results.
+ */
+async function waitForBackfill(timeoutMs = 60_000, intervalMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const health = await retriever.health().catch(() => null);
+    if (health !== null && health.percentIndexed >= 100) {
+      console.log(`Index backfilled: ${health.numDocs} docs.`);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  console.warn("Backfill did not reach 100% before timeout; continuing anyway.");
 }
 
 main().catch((err) => {

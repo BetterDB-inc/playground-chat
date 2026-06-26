@@ -50,19 +50,27 @@ export async function vectorSearch(
   return hits.map(hitToDoc);
 }
 
+/** Canonical command form for matching: strip punctuation/space, uppercase. */
+function canonicalCommand(s: string): string {
+  return s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 export async function getCommandByName(
   name: string,
   source?: CommandSource,
 ): Promise<DocResult | null> {
-  // Normalize the command name the way the corpus stores titles ("FT.SEARCH" →
-  // "FT-SEARCH") and let vector similarity pull the matching doc to the top.
+  // Vector NN alone can surface a near-neighbour with similar wording, so pull
+  // a handful of candidates and require an exact command-name match on title.
+  // No match → not documented (better than returning the wrong command).
   const normalized = name.toUpperCase().replace(/\s+/g, "-");
   const hits = await retriever.query({
     text: normalized,
-    k: 1,
+    k: 10,
     filter: source ? { source } : undefined,
   });
-  return hits[0] ? hitToDoc(hits[0]) : null;
+  const target = canonicalCommand(name);
+  const exact = hits.find((hit) => canonicalCommand(hit.fields.title ?? "") === target);
+  return exact ? hitToDoc(exact) : null;
 }
 
 const MODULE_QUERY_TERMS: Record<string, string> = {
