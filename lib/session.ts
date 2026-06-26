@@ -12,8 +12,15 @@ const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
 /** Read the visitor id from the request's Cookie header, or null if absent. */
 export function readUserId(req: Request): string | null {
   const header = req.headers.get("cookie") ?? "";
-  const captured = header.match(/(?:^|;\s*)pg_uid=([^;]+)/)?.[1];
-  return captured !== undefined ? decodeURIComponent(captured) : null;
+  const captured = header.match(/(?:^|;\s*)pg_uid=([^;]*)/)?.[1];
+  if (captured === undefined) {
+    return null;
+  }
+  // An empty/whitespace cookie value isn't a real namespace — treat it as
+  // absent so callers mint a fresh id (or take the no-session path) rather
+  // than scoping memory to the empty namespace.
+  const value = decodeURIComponent(captured).trim();
+  return value === "" ? null : value;
 }
 
 /** Mint a fresh opaque visitor id. */

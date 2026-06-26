@@ -22,6 +22,12 @@ describe("lib/session", () => {
     expect(readUserId(reqWithCookie())).toBeNull();
   });
 
+  it("treats an empty or whitespace pg_uid value as absent", () => {
+    expect(readUserId(reqWithCookie("pg_uid="))).toBeNull();
+    expect(readUserId(reqWithCookie("pg_uid=; other=1"))).toBeNull();
+    expect(readUserId(reqWithCookie("pg_uid=%20"))).toBeNull();
+  });
+
   it("mints opaque, unique ids", () => {
     const a = mintUserId();
     const b = mintUserId();
