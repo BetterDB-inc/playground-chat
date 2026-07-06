@@ -6,6 +6,7 @@ import {
 } from "@betterdb/agent-memory";
 import { valkey } from "./valkey";
 import { embedText } from "./embeddings";
+import { withSpan, captureContent } from "./telemetry";
 
 /**
  * Cross-session long-term memory for the assistant, built on
@@ -57,10 +58,35 @@ export function ensureMemoryIndex(): Promise<void> {
   return indexReady;
 }
 
-/** Recall this user's most relevant memories for the current message. */
+/**
+ * Recall this user's most relevant memories for the current message.
+ * Traced as a LangWatch "rag" span; memory content only leaves the process
+ * as RAG contexts when content capture is explicitly enabled (it's per-user
+ * personal data). The package's own agent_memory.recall span nests inside.
+ */
 export async function recallMemories(text: string, userId: string, k = DEFAULT_RECALL_K) {
   await ensureMemoryIndex();
-  return memoryStore.recall(text, { namespace: userId, k });
+  return withSpan(
+    "memory.recall",
+    { "langwatch.span.type": "rag", "memory.k": k },
+    async (span) => {
+      const hits = await memoryStore.recall(text, { namespace: userId, k });
+      span.setAttribute("memory.hits", hits.length);
+      if (captureContent && hits.length > 0) {
+        span.setAttribute(
+          "langwatch.rag.contexts",
+          JSON.stringify(
+            hits.map((h) => ({
+              document_id: h.item.id,
+              chunk_id: h.item.id,
+              content: h.item.content,
+            })),
+          ),
+        );
+      }
+      return hits;
+    },
+  );
 }
 
 /** Store a durable fact/preference learned about this user. */

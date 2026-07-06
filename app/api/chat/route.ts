@@ -25,6 +25,8 @@ import { after } from "next/server";
 import { getOrCreateUserId } from "@/lib/session";
 import { recallMemories, rememberFact, maybeConsolidate } from "@/lib/memory";
 import { extractFacts } from "@/lib/memory-extract";
+import { withSpan, spanText, telemetryEnabled, captureContent } from "@/lib/telemetry";
+import type { Span } from "@opentelemetry/api";
 import type { ToolMeta, TurnMetrics } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -165,6 +167,16 @@ async function postTurnMemory(
 }
 
 export async function POST(req: Request) {
+  // One root span per chat turn. Child spans (cache checks, memory recall,
+  // retrieval, AI SDK generations) nest under it via context propagation.
+  // The span ends when the handler returns the Response — LLM streaming
+  // continues in the AI SDK's own spans. No-op unless LANGWATCH_API_KEY set.
+  return withSpan("chat.turn", { "langwatch.span.type": "chain" }, (span) =>
+    handleChat(req, span),
+  );
+}
+
+async function handleChat(req: Request, turnSpan: Span): Promise<Response> {
   // Fail fast if the deployment is misconfigured. validateEnv() is memoized
   // so this is essentially free after the first call.
   let env;
@@ -182,9 +194,9 @@ export async function POST(req: Request) {
   const ip = detectClientIp(req);
   const turnStart = Date.now();
 
-  let body: { messages?: UIMessage[] };
+  let body: { id?: string; messages?: UIMessage[] };
   try {
-    body = (await req.json()) as { messages?: UIMessage[] };
+    body = (await req.json()) as { id?: string; messages?: UIMessage[] };
   } catch {
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
@@ -207,6 +219,13 @@ export async function POST(req: Request) {
   // a fresh httpOnly cookie id, attached to whichever response we return below.
   const { userId, setCookie } = getOrCreateUserId(req);
   const sessionHeaders = setCookie ? { "set-cookie": setCookie } : undefined;
+
+  // Trace attribution: LangWatch groups traces by thread (useChat sends a
+  // stable per-conversation `id` with every request) and user.
+  turnSpan.setAttributes({
+    "langwatch.user.id": userId,
+    ...(typeof body.id === "string" && body.id !== "" ? { "langwatch.thread.id": body.id } : {}),
+  });
 
   // Sync guardrails: cheap and synchronous (length, control chars, type).
   // Carry sessionHeaders on every post-mint response (errors included) so a new
@@ -239,6 +258,9 @@ export async function POST(req: Request) {
   // request - only what we persist.
   const persistedQuery = scrubSecrets(lastUserText);
 
+  // Scrubbed + truncated on the trace, mirroring what the log stream stores.
+  turnSpan.setAttribute("langwatch.input", spanText(persistedQuery.slice(0, 500)));
+
   // createOpenAI is O(1) — create it here so the judge closure can reference
   // it without capturing env. Also reused below for the LLM call.
   const openai = createOpenAI({ apiKey: env.openaiKey });
@@ -270,6 +292,14 @@ export async function POST(req: Request) {
     const agentLlmResult = await agentCache.llm.check(llmCacheParams);
     if (agentLlmResult.hit && agentLlmResult.response) {
       const cachedText = agentLlmResult.response;
+
+      turnSpan.setAttributes({
+        "cache.llm_exact.hit": true,
+        "chat.response_source": "agent_cache_llm",
+      });
+      if (captureContent) {
+        turnSpan.setAttribute("langwatch.output", spanText(scrubSecrets(cachedText).slice(0, 2000)));
+      }
 
       await Promise.all([
         logTurn({
@@ -385,6 +415,37 @@ export async function POST(req: Request) {
     // pre-warm script), it'll be undefined - we report 0 in that case.
     const savedUsd = semanticHit.costSaved ?? 0;
 
+    // A judge-accepted hit has confidence:'high' (promoted from 'uncertain')
+    // AND a similarity score inside the uncertainty band.
+    // Use the live threshold from the cache instance (not the env var) so
+    // this stays correct after configRefresh applies a loosened threshold
+    // from the optimize agent. The uncertainty band lower bound is
+    // liveThreshold - band; anything below that was always high-confidence
+    // and never reached the judge.
+    const scBand = Number(process.env.SEMANTIC_UNCERTAINTY_BAND ?? 0.07);
+    const liveThreshold = queryCategory
+      ? (semanticCache._categoryThresholds[queryCategory] ?? semanticCache._defaultThreshold)
+      : semanticCache._defaultThreshold;
+    const judgeAccepted =
+      semanticHit.confidence === "high" &&
+      semanticHit.similarity !== undefined &&
+      semanticHit.similarity > liveThreshold - scBand;
+
+    turnSpan.setAttributes({
+      "cache.semantic.hit": true,
+      "cache.semantic.confidence": semanticHit.confidence,
+      "cache.semantic.judge_accepted": judgeAccepted,
+      "cache.cost_saved_usd": savedUsd,
+      "cache.embed_latency_ms": embedLatencyMs,
+      "chat.response_source": "semantic_cache",
+      ...(semanticHit.similarity !== undefined
+        ? { "cache.semantic.similarity": semanticHit.similarity }
+        : {}),
+    });
+    if (captureContent) {
+      turnSpan.setAttribute("langwatch.output", spanText(scrubSecrets(text).slice(0, 2000)));
+    }
+
     await Promise.all([
       logTurn({
         ip,
@@ -435,22 +496,6 @@ export async function POST(req: Request) {
     const stream = createUIMessageStream({
       execute: ({ writer }) => {
         const id = `cached-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        // A judge-accepted hit has confidence:'high' (promoted from 'uncertain')
-        // AND a similarity score inside the uncertainty band.
-        // Use the live threshold from the cache instance (not the env var) so
-        // this stays correct after configRefresh applies a loosened threshold
-        // from the optimize agent. The uncertainty band lower bound is
-        // liveThreshold - band; anything below that was always high-confidence
-        // and never reached the judge.
-        const scBand = Number(process.env.SEMANTIC_UNCERTAINTY_BAND ?? 0.07);
-        const liveThreshold = queryCategory
-          ? (semanticCache._categoryThresholds[queryCategory] ?? semanticCache._defaultThreshold)
-          : semanticCache._defaultThreshold;
-        const judgeAccepted =
-          semanticHit.confidence === "high" &&
-          semanticHit.similarity !== undefined &&
-          semanticHit.similarity > liveThreshold - scBand;
-
         const metrics: TurnMetrics = {
           semantic: {
             hit: true,
@@ -508,6 +553,7 @@ export async function POST(req: Request) {
       hit: memories.length > 0,
       latencyMs: Date.now() - recallStart,
     }).catch(() => {});
+    turnSpan.setAttribute("memory.recalled", memories.length);
     if (memories.length > 0) {
       const lines = memories.map((m) => `- ${m.item.content}`).join("\n");
       system = `${SYSTEM_PROMPT}\n\n## What you remember about this user\n${lines}`;
@@ -518,6 +564,22 @@ export async function POST(req: Request) {
   }
 
   // ---- LLM call ----
+  // Miss path: record why the caches didn't answer + whether memory shaped it.
+  turnSpan.setAttributes({
+    "cache.semantic.hit": false,
+    "chat.response_source": "llm",
+    "chat.personalized": personalized,
+    "cache.embed_latency_ms": embedLatencyMs,
+    ...(semanticHit.nearestMiss !== undefined
+      ? {
+          "cache.semantic.nearest_miss": semanticHit.nearestMiss.similarity,
+          // deltaToThreshold <= 0 means the score cleared the cosine threshold
+          // but the judge said no — distinct from a plain cosine miss.
+          "cache.semantic.judge_rejected": semanticHit.nearestMiss.deltaToThreshold <= 0,
+        }
+      : {}),
+  });
+
   const toolMetas: ToolMeta[] = [];
 
   const result = streamText({
@@ -526,6 +588,16 @@ export async function POST(req: Request) {
     messages: modelMessages,
     tools,
     stopWhen: stepCountIs(5),
+    // AI SDK OTel spans (generations, tool calls, token usage) — exported to
+    // LangWatch as children of chat.turn. Inputs/outputs stay off the wire
+    // unless content capture is explicitly enabled: the system prompt may
+    // embed this visitor's recalled memories.
+    experimental_telemetry: {
+      isEnabled: telemetryEnabled,
+      functionId: "chat-turn",
+      recordInputs: captureContent,
+      recordOutputs: captureContent,
+    },
     onStepFinish: ({ toolResults }) => {
       for (const tr of toolResults ?? []) {
         const meta = (tr.output as { _meta?: ToolMeta } | undefined)?._meta;
