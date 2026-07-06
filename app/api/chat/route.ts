@@ -259,7 +259,11 @@ async function handleChat(req: Request, turnSpan: Span): Promise<Response> {
   const persistedQuery = scrubSecrets(lastUserText);
 
   // Scrubbed + truncated on the trace, mirroring what the log stream stores.
-  turnSpan.setAttribute("langwatch.input", spanText(persistedQuery.slice(0, 500)));
+  // Like every other content-capture path, only when explicitly opted in —
+  // by default spans carry metadata only.
+  if (captureContent) {
+    turnSpan.setAttribute("langwatch.input", spanText(persistedQuery.slice(0, 500)));
+  }
 
   // createOpenAI is O(1) — create it here so the judge closure can reference
   // it without capturing env. Also reused below for the LLM call.
