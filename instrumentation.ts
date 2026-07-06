@@ -28,7 +28,18 @@ export async function register(): Promise<void> {
   registerOTel({
     serviceName: "betterdb-playground-chat",
     // Reads LANGWATCH_API_KEY + LANGWATCH_ENDPOINT from the environment.
-    // Default filter drops framework HTTP noise; cache/memory/LLM spans pass.
-    traceExporter: new LangWatchExporter(),
+    traceExporter: new LangWatchExporter({
+      // Applied sequentially (AND semantics). Beyond the default HTTP-noise
+      // preset, drop Next.js framework spans (resolve page components,
+      // executing api route, start response) so `chat.turn` is the trace
+      // root — and health-check/page-load traces, which are *only* framework
+      // spans, disappear entirely. Also drop PostHog analytics fetches;
+      // OpenAI fetch spans stay (they show real latency in the waterfall).
+      filters: [
+        { preset: "excludeHttpRequests" },
+        { exclude: { instrumentationScopeName: [{ equals: "next.js" }] } },
+        { exclude: { name: [{ startsWith: "fetch POST https://eu.i.posthog.com" }] } },
+      ],
+    }),
   });
 }
