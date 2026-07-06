@@ -11,6 +11,7 @@ import {
   type CommandSource,
 } from "./rag";
 import { estimateEmbedCost, approximateTokens } from "./pricing";
+import { withSpan } from "./telemetry";
 import type { ToolMeta } from "./types";
 
 /**
@@ -47,23 +48,34 @@ async function cached<T>(
   fn: () => Promise<T>,
   opts: CachedOpts = {},
 ): Promise<{ result: T; _meta: ToolMeta }> {
-  const start = Date.now();
-  const key = normalizeArgs(args);
-  const hit = await agentCache.tool.check(name, key);
-  if (hit.hit && hit.response !== undefined) {
-    return {
-      result: JSON.parse(hit.response) as T,
-      _meta: { name, hit: true, latencyMs: Date.now() - start },
-    };
-  }
-  const result = await fn();
-  await agentCache.tool.store(name, key, JSON.stringify(result), {
-    cost: opts.costEstimateUsd,
-  });
-  return {
-    result,
-    _meta: { name, hit: false, latencyMs: Date.now() - start },
-  };
+  return withSpan(
+    `tool.${name}`,
+    { "langwatch.span.type": "tool", "tool.name": name },
+    async (span) => {
+      const start = Date.now();
+      const key = normalizeArgs(args);
+      const hit = await agentCache.tool.check(name, key);
+      if (hit.hit && hit.response !== undefined) {
+        span.setAttributes({
+          "cache.hit": true,
+          "cache.cost_saved_usd": opts.costEstimateUsd ?? 0,
+        });
+        return {
+          result: JSON.parse(hit.response) as T,
+          _meta: { name, hit: true, latencyMs: Date.now() - start },
+        };
+      }
+      const result = await fn();
+      span.setAttribute("cache.hit", false);
+      await agentCache.tool.store(name, key, JSON.stringify(result), {
+        cost: opts.costEstimateUsd,
+      });
+      return {
+        result,
+        _meta: { name, hit: false, latencyMs: Date.now() - start },
+      };
+    },
+  );
 }
 
 const EMBED_MODEL = process.env.EMBED_MODEL ?? "text-embedding-3-small";

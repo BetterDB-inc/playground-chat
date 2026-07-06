@@ -9,7 +9,10 @@
 # they pulled. Bump deliberately when you want a newer version.
 services:
   valkey:
-    image: valkey/valkey-bundle:8.1
+    # 9.1 ships valkey-search >= 1.1, which supports TEXT fields in FT.CREATE;
+    # the 8.1 bundle (search 1.0.0) rejects them, breaking semantic-cache
+    # initialization on a fresh volume.
+    image: valkey/valkey-bundle:9.1
     container_name: betterdb-playground-valkey
     ports:
       - "6399:6379"

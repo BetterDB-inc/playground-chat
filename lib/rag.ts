@@ -1,5 +1,6 @@
 import { retriever } from "./retrieval";
 import { recordRetrievalQuery } from "./stats";
+import { withSpan, captureContent } from "./telemetry";
 import type { QueryHit } from "@betterdb/retrieval";
 
 /**
@@ -51,21 +52,58 @@ function stripTitlePrefix(text: string, title: string): string {
   return text.startsWith(prefix) ? text.slice(prefix.length) : text;
 }
 
+/**
+ * Run a retriever query inside a `retrieval.query` OTel span (LangWatch "rag"
+ * type). Retrieved chunks are attached as RAG contexts only when content
+ * capture is enabled. Also feeds the Context-layer counters — recording at
+ * this boundary means every tool that searches (search_docs, get_module_info,
+ * get_betterdb_info, command lookups, …) is covered, not just one.
+ * Best-effort: a metrics write must never fail the search.
+ */
+async function tracedQuery(
+  opts: { text: string; k: number; filter?: { source: string } },
+  source: string | undefined,
+): Promise<QueryHit[]> {
+  return withSpan(
+    "retrieval.query",
+    {
+      "langwatch.span.type": "rag",
+      "retrieval.k": opts.k,
+      ...(source ? { "retrieval.source": source } : {}),
+    },
+    async (span) => {
+      const start = Date.now();
+      const hits = await retriever.query(opts);
+      span.setAttribute("retrieval.docs", hits.length);
+      if (captureContent && hits.length > 0) {
+        span.setAttribute(
+          "langwatch.rag.contexts",
+          JSON.stringify(
+            hits.map((h) => ({
+              document_id: h.id,
+              chunk_id: h.id,
+              content: h.text.slice(0, 500),
+            })),
+          ),
+        );
+      }
+      void recordRetrievalQuery({ latencyMs: Date.now() - start, docs: hits.length }).catch(
+        () => {},
+      );
+      return hits;
+    },
+  );
+}
+
 export async function vectorSearch(
   query: string,
   source?: DocSource,
   limit = 5,
 ): Promise<DocResult[]> {
-  // Record at the retrieval boundary so every tool that searches (search_docs,
-  // get_module_info, get_betterdb_info, …) feeds the Context-layer metrics, not
-  // just one. Best-effort: a metrics write must never fail the search.
-  const start = Date.now();
-  const hits = await retriever.query({
-    text: query,
-    k: limit,
-    filter: source ? { source } : undefined,
-  });
-  void recordRetrievalQuery({ latencyMs: Date.now() - start, docs: hits.length }).catch(() => {});
+  const hits = await tracedQuery(
+    { text: query, k: limit, filter: source ? { source } : undefined },
+    source,
+  );
   return hits.map(hitToDoc);
 }
 
@@ -82,13 +120,10 @@ export async function getCommandByName(
   // a handful of candidates and require an exact command-name match on title.
   // No match → not documented (better than returning the wrong command).
   const normalized = name.toUpperCase().replace(/\s+/g, "-");
-  const start = Date.now();
-  const hits = await retriever.query({
-    text: normalized,
-    k: 10,
-    filter: source ? { source } : undefined,
-  });
-  void recordRetrievalQuery({ latencyMs: Date.now() - start, docs: hits.length }).catch(() => {});
+  const hits = await tracedQuery(
+    { text: normalized, k: 10, filter: source ? { source } : undefined },
+    source,
+  );
   const target = canonicalCommand(name);
   const exact = hits.find((hit) => canonicalCommand(hit.fields.title ?? "") === target);
   return exact ? hitToDoc(exact) : null;
